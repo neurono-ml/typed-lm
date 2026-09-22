@@ -114,22 +114,71 @@ impl LanguageModel {
 
     /// Resolves a single-token answer label, trying common spacing variants.
     /// Returns None when the label is not exactly one vocabulary token.
+    ///
+    /// Resolution is encode-based on purpose: some byte-fallback vocabularies
+    /// (for example TinyLlama) map a bare `"A"` to the single token `▁A`
+    /// while `token_to_id("A")` reports the never-generated non-spaced id, so
+    /// requiring both to agree rejects labels the model can actually emit.
     pub fn label_token_id(&self, label: &str) -> Option<u32> {
-        for candidate in [format!(" {label}"), label.to_string(), format!("\n{label}")] {
-            if let Some(id) = self.tokenizer.token_to_id(&candidate) {
-                let ids = self.tokenizer.encode(candidate.clone(), false).ok()?;
-                if ids.get_ids().len() == 1 && ids.get_ids()[0] == id {
-                    return Some(id);
-                }
+        resolve_single_token_id(
+            &self.tokenizer,
+            &[label.to_string(), format!(" {label}"), format!("\n{label}")],
+        )
+    }
+}
+
+/// Returns the vocabulary id when a candidate string encodes to exactly one
+/// token, trying each candidate in order. Pure function over the tokenizer so
+/// answer-label resolution stays testable without model weights.
+fn resolve_single_token_id(tokenizer: &Tokenizer, candidates: &[String]) -> Option<u32> {
+    for candidate in candidates {
+        if let Ok(encoding) = tokenizer.encode(candidate.as_str(), false) {
+            if encoding.get_ids().len() == 1 {
+                return Some(encoding.get_ids()[0]);
             }
         }
-        None
     }
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_token_resolution_accepts_only_single_token_candidates() {
+        use std::collections::HashMap;
+        use tokenizers::models::wordlevel::WordLevelBuilder;
+        use tokenizers::pre_tokenizers::whitespace::Whitespace;
+
+        let vocab: HashMap<String, u32> = [
+            ("A".to_string(), 0),
+            ("B".to_string(), 1),
+            ("[UNK]".to_string(), 2),
+        ]
+        .into_iter()
+        .collect();
+        let word_level = WordLevelBuilder::default()
+            .vocab(vocab)
+            .unk_token("[UNK]".to_string())
+            .build()
+            .unwrap();
+        let mut tokenizer = Tokenizer::new(word_level);
+        tokenizer.with_pre_tokenizer(Whitespace);
+
+        assert_eq!(
+            resolve_single_token_id(&tokenizer, &["A".to_string()]),
+            Some(0)
+        );
+        assert_eq!(
+            resolve_single_token_id(&tokenizer, &["A B".to_string()]),
+            None
+        );
+        assert_eq!(
+            resolve_single_token_id(&tokenizer, &["A B".to_string(), "B".to_string()]),
+            Some(1)
+        );
+    }
 
     #[test]
     fn system_prompt_wraps_content_with_markers() {

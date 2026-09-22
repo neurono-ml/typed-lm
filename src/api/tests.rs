@@ -214,9 +214,10 @@ async fn liveness_reports_ok() {
 /// Live integration test against the real weights and `resources/memory.md`.
 ///
 /// Ignored by default so CI never downloads model weights; run explicitly with
-/// `cargo test -- --ignored`. It validates context-anchored answers: a
-/// double charge 60 days old is still refundable (fact 4 overrides the
-/// 30-day window) and routes to the billing department.
+/// `cargo test -- --ignored`. It validates context-anchored answers: an item
+/// damaged in transit and reported 10 days after delivery is still refundable
+/// (fact 2 covers damaged items within the 30-day window) and routes to the
+/// logistics department (fact 7).
 #[actix_web::test]
 #[ignore]
 async fn live_candle_evaluator_answers_context_anchored_questions() {
@@ -229,7 +230,7 @@ async fn live_candle_evaluator_answers_context_anchored_questions() {
 
     let served_model_name = "jev-latest".to_string();
     let execution_device = DeviceResolver::resolve().unwrap();
-    let model_files = ModelRepository::new("recogna-nlp/bode-1b-instruct")
+    let model_files = ModelRepository::new("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
         .unwrap()
         .files()
         .unwrap();
@@ -255,7 +256,7 @@ async fn live_candle_evaluator_answers_context_anchored_questions() {
         actix_test::init_service(App::new().app_data(shared_state).configure(configure)).await;
     let payload = serde_json::json!({
         "model": served_model_name,
-        "state": "The customer found a duplicate charge for order #4821 on their credit card. The duplicate charge is 60 days old and they request a full refund of the duplicate.",
+        "state": "The customer's order #7710 arrived with a cracked screen after rough handling in transit. Delivery was 10 days ago and they request a full refund for the damaged item.",
         "questions": {
             "refund_eligible": {
                 "type": "noul",
@@ -282,17 +283,27 @@ async fn live_candle_evaluator_answers_context_anchored_questions() {
         .set_json(payload)
         .to_request();
     let response = actix_test::call_service(&application, request).await;
-    assert_eq!(response.status(), StatusCode::OK);
+    if response.status() != StatusCode::OK {
+        let status = response.status();
+        let raw_body = actix_test::read_body(response).await;
+        panic!(
+            "expected 200, got {status} body={}",
+            String::from_utf8_lossy(&raw_body)
+        );
+    }
     let body: serde_json::Value = actix_test::read_body_json(response).await;
     let noul = body["answers"]["refund_eligible"]["noul"].as_f64().unwrap();
     assert!(
         noul > 0.5,
-        "double charge is always refundable per memory fact 4, got noul={noul}"
+        "damaged item reported within the 30-day window is refundable per memory fact 2, got noul={noul}"
     );
     let department = body["answers"]["responsible_department"]["choice"]
         .as_str()
         .unwrap();
-    assert_eq!(department, "billing");
+    assert_eq!(
+        department, "logistics",
+        "damaged shipments route to logistics per memory fact 7"
+    );
     let urgency = body["answers"]["urgency"]["score"].as_f64().unwrap();
     assert!(
         (0.0..=2.0).contains(&urgency),

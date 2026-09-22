@@ -30,7 +30,7 @@ pub struct ServeArgs {
 
     /// Hugging Face model id (checkpoint arquitetura Llama com
     /// config.json, tokenizer.json e model.safetensors).
-    #[arg(long, default_value = "recogna-nlp/bode-1b-instruct")]
+    #[arg(long, default_value = "TinyLlama/TinyLlama-1.1B-Chat-v1.0")]
     pub model_id: String,
 
     /// Arquivo de memória/contexto avaliado junto com cada request.
