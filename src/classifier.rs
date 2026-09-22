@@ -1,14 +1,16 @@
 /// Calibrates two raw logits into probabilities via binary softmax.
+/// Numerically stable (subtracts the peak before exp), matching `normalize`.
 pub struct Classifier;
 
 impl Classifier {
     pub fn binary_softmax(true_logit: f32, false_logit: f32) -> Classification {
-        let e_true = true_logit.exp();
-        let e_false = false_logit.exp();
-        let sum = e_true + e_false;
+        let peak = true_logit.max(false_logit);
+        let exponent_true = (true_logit - peak).exp();
+        let exponent_false = (false_logit - peak).exp();
+        let sum = exponent_true + exponent_false;
         Classification {
-            true_prob: e_true / sum,
-            false_prob: e_false / sum,
+            true_prob: exponent_true / sum,
+            false_prob: exponent_false / sum,
         }
     }
 

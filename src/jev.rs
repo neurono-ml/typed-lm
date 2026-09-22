@@ -66,24 +66,24 @@ pub struct SystemOneRequest {
 }
 
 impl SystemOneRequest {
-    /// Validação estrutural do contrato oficial (sem limites quantitativos).
+    /// Structural validation of the official contract (no quantitative limits).
     pub fn validate(&self) -> Result<(), String> {
         if self.questions.is_empty() {
-            return Err("questions não pode ser vazio".to_string());
+            return Err("questions must not be empty".to_string());
         }
-        for (identificador, pergunta) in &self.questions {
-            match pergunta {
+        for (question_identifier, question) in &self.questions {
+            match question {
                 Question::Choice { criteria, .. } => {
                     if criteria.is_empty() {
                         return Err(format!(
-                            "pergunta '{identificador}': criteria de choice não pode ser vazio"
+                            "question '{question_identifier}': choice criteria must not be empty"
                         ));
                     }
                 }
                 Question::Score { criteria, .. } => {
                     if !(2..=10).contains(&criteria.len()) {
                         return Err(format!(
-                            "pergunta '{identificador}': score exige de 2 a 10 níveis"
+                            "question '{question_identifier}': score requires between 2 and 10 levels"
                         ));
                     }
                 }
@@ -164,16 +164,6 @@ pub struct ModelsResponse {
     pub object: String,
     pub data: Vec<OpenAIModelEntry>,
     pub models: Vec<ModelEntry>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct LimitsResponse {
-    pub max_answers_per_question: usize,
-    pub max_questions: usize,
-    pub max_body_bytes: usize,
-    pub max_input_tokens: usize,
-    pub max_total_input_tokens: usize,
-    pub max_concurrent_requests: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]

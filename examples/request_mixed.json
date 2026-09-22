@@ -1,0 +1,24 @@
+{
+  "model": "jev-latest",
+  "state": "Order #7710 arrived with a smashed box and a cracked vase inside. Delivery was 3 days ago and the customer asks what to do next.",
+  "questions": {
+    "refund_eligible": {
+      "type": "noul",
+      "instructions": "The customer is eligible for a full refund under the store policy."
+    },
+    "responsible_department": {
+      "type": "choice",
+      "instructions": "Which department should handle this case?",
+      "criteria": {
+        "billing": "Double charges and payment errors",
+        "logistics": "Damaged, lost, or late shipments",
+        "product_support": "Defective-item troubleshooting, replacements, and setup help"
+      }
+    },
+    "urgency": {
+      "type": "score",
+      "instructions": "How urgent is this case?",
+      "criteria": ["Routine", "Urgent", "Emergency"]
+    }
+  }
+}

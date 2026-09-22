@@ -97,17 +97,6 @@ impl LanguageModel {
         Self::extract_logit(logits, token_id)
     }
 
-    /// Resolves a token id, trying with and without a leading space.
-    /// Returns an error instead of panicking via `unwrap`.
-    pub fn token_id(&self, with_space: &str, without_space: &str) -> anyhow::Result<u32> {
-        self.tokenizer
-            .token_to_id(with_space)
-            .or_else(|| self.tokenizer.token_to_id(without_space))
-            .ok_or_else(|| {
-                anyhow::anyhow!("tokens '{with_space}'/'{without_space}' not found in vocabulary")
-            })
-    }
-
     fn tokenize(&self, text: &str, add_special: bool) -> anyhow::Result<Vec<u32>> {
         let enc = self
             .tokenizer

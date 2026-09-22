@@ -12,6 +12,7 @@ use crate::model::LanguageModel;
 /// Softmax temperature applied to every answer distribution.
 const SCORING_TEMPERATURE: f32 = 1.0;
 /// Probability reported by [`MockEvaluator`] for boolean questions.
+#[cfg(test)]
 const MOCK_NOUL_PROBABILITY: f32 = 0.75;
 
 /// Abstraction over the evaluation pipeline.
@@ -43,10 +44,19 @@ pub fn option_labels(option_count: usize) -> Vec<String> {
 
 /// Calibrates raw label logits into a probability distribution.
 ///
+/// Boolean questions carry exactly two labels and go through the binary
+/// softmax; larger label sets use the temperature-scaled softmax. Both
+/// paths compute the same distribution family, so `normalize` and
+/// `binary_softmax` agree on two-logit inputs.
+///
 /// The scoring intentionally reads Candle logits: Rig orchestrates the
 /// conversation history (preamble plus user message) but does not expose
 /// logprobs, so the single forward pass distribution always comes from Candle.
 pub fn calibrate_probabilities(logit_values: &[f32]) -> Vec<f32> {
+    if logit_values.len() == 2 {
+        let classification = Classifier::binary_softmax(logit_values[0], logit_values[1]);
+        return vec![classification.true_prob, classification.false_prob];
+    }
     Classifier::normalize(logit_values, SCORING_TEMPERATURE)
 }
 
@@ -361,12 +371,15 @@ impl Evaluator for CandleEvaluator<'_> {
 
 /// Predictable test double: returns fixed answers without loading weights.
 ///
-/// API tests for the next slice should depend on this evaluator instead of
-/// [`CandleEvaluator`], keeping CI free of heavy model downloads.
+/// API tests depend on this evaluator instead of [`CandleEvaluator`],
+/// keeping CI free of heavy model downloads. It is compiled only for
+/// tests because this is a binary crate: no external target can import it.
+#[cfg(test)]
 pub struct MockEvaluator {
     served_model_name: String,
 }
 
+#[cfg(test)]
 impl MockEvaluator {
     pub fn new(served_model_name: String) -> Self {
         Self { served_model_name }
@@ -420,6 +433,7 @@ impl MockEvaluator {
     }
 }
 
+#[cfg(test)]
 impl Evaluator for MockEvaluator {
     fn evaluate(&self, request: &SystemOneRequest) -> Result<SystemOneResponse, EvaluationError> {
         request
