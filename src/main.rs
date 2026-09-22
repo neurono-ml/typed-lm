@@ -4,6 +4,7 @@
 // TODO(slice-6): remove the temporary dead_code allowance.
 #![allow(dead_code)]
 
+mod api;
 mod classifier;
 mod cli;
 mod context;
