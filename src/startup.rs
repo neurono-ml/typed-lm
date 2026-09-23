@@ -60,7 +60,11 @@ fn load_memory_context(path: &Path) -> anyhow::Result<(String, String)> {
 async fn run_serve_command(serve_arguments: ServeArgs) -> anyhow::Result<()> {
     let started = Instant::now();
     let execution_device = DeviceResolver::resolve()?;
-    let model_files = ModelRepository::new(&serve_arguments.model_id)?.files()?;
+    let model_files = ModelRepository::new(
+        &serve_arguments.model_id,
+        serve_arguments.hugging_face_token.clone(),
+    )?
+    .files()?;
     let language_model = LanguageModel::load(
         &model_files.config,
         &model_files.weights,

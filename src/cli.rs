@@ -21,7 +21,7 @@ pub enum Command {
 #[derive(Args, Debug)]
 pub struct ServeArgs {
     /// Interface de escuta.
-    #[arg(long, default_value = "127.0.0.1")]
+    #[arg(long, default_value = "0.0.0.0")]
     pub host: String,
 
     /// Porta de escuta.
@@ -38,14 +38,25 @@ pub struct ServeArgs {
     #[arg(long, default_value = "resources/memory.md")]
     pub context: PathBuf,
 
-    /// Nome público do modelo anunciado em /v1/models e nas respostas.
+    /// Public model name announced in /v1/models and in responses.
     #[arg(long, default_value = "jev-latest")]
     pub served_model_name: String,
+
+    /// Hugging Face access token for gated models.
+    /// Falls back to the HF_TOKEN environment variable when the flag is omitted.
+    #[arg(long = "hf-token", env = "HF_TOKEN")]
+    pub hugging_face_token: Option<String>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn environment_lock() -> &'static Mutex<()> {
+        static ENVIRONMENT_GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        ENVIRONMENT_GUARD.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn serve_subcommand_parses_all_options() {
@@ -74,10 +85,63 @@ mod tests {
 
     #[test]
     fn serve_uses_sensible_defaults() {
+        let _guard = environment_lock().lock().unwrap();
+        let previous_value = std::env::var("HF_TOKEN").ok();
+        std::env::remove_var("HF_TOKEN");
         let cli = Cli::try_parse_from(["manaca-jev-like", "serve"]).unwrap();
         let Command::Serve(args) = cli.command;
-        assert_eq!(args.host, "127.0.0.1");
+        assert_eq!(args.host, "0.0.0.0");
         assert_eq!(args.port, 8080);
         assert_eq!(args.context, PathBuf::from("resources/memory.md"));
+        if let Some(previous) = previous_value {
+            std::env::set_var("HF_TOKEN", previous);
+        }
+    }
+
+    #[test]
+    fn serve_parses_explicit_hugging_face_token() {
+        let cli = Cli::try_parse_from([
+            "manaca-jev-like",
+            "serve",
+            "--hf-token",
+            "secret-token-value",
+        ])
+        .unwrap();
+        let Command::Serve(args) = cli.command;
+        assert_eq!(
+            args.hugging_face_token.as_deref(),
+            Some("secret-token-value")
+        );
+    }
+
+    #[test]
+    fn serve_defaults_to_no_hugging_face_token() {
+        let _guard = environment_lock().lock().unwrap();
+        let previous_value = std::env::var("HF_TOKEN").ok();
+        std::env::remove_var("HF_TOKEN");
+        let cli = Cli::try_parse_from(["manaca-jev-like", "serve"]).unwrap();
+        let Command::Serve(args) = cli.command;
+        assert_eq!(args.hugging_face_token, None);
+        if let Some(previous) = previous_value {
+            std::env::set_var("HF_TOKEN", previous);
+        }
+    }
+
+    #[test]
+    fn serve_falls_back_to_hugging_face_token_environment() {
+        let _guard = environment_lock().lock().unwrap();
+        let previous_value = std::env::var("HF_TOKEN").ok();
+        std::env::set_var("HF_TOKEN", "environment-token-value");
+        let cli = Cli::try_parse_from(["manaca-jev-like", "serve"]).unwrap();
+        let Command::Serve(args) = cli.command;
+        assert_eq!(
+            args.hugging_face_token.as_deref(),
+            Some("environment-token-value")
+        );
+        if let Some(previous) = previous_value {
+            std::env::set_var("HF_TOKEN", previous);
+        } else {
+            std::env::remove_var("HF_TOKEN");
+        }
     }
 }

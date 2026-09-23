@@ -230,7 +230,7 @@ async fn live_candle_evaluator_answers_context_anchored_questions() {
 
     let served_model_name = "jev-latest".to_string();
     let execution_device = DeviceResolver::resolve().unwrap();
-    let model_files = ModelRepository::new("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+    let model_files = ModelRepository::new("TinyLlama/TinyLlama-1.1B-Chat-v1.0", None)
         .unwrap()
         .files()
         .unwrap();
