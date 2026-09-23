@@ -11,7 +11,9 @@ cargo run -- serve
 ```
 
 O servidor sobe por padrão em `http://127.0.0.1:8080`
-com o contexto `resources/memory.md`.
+sem contexto (`--context-path` ausente). Passe
+`--context-path resources/memory.md` (ou `CONTEXT_PATH`)
+para ancorar as respostas nos fatos de exemplo.
 
 ## Modelos com acesso restrito (gated)
 

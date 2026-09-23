@@ -37,10 +37,11 @@ pub struct ServeArgs {
     )]
     pub model_id: String,
 
-    /// Arquivo de memória/contexto avaliado junto com cada request.
-    /// Será substituível por RAG sem trocar a interface.
-    #[arg(long, env = "CONTEXT_PATH", default_value = "resources/memory.md")]
-    pub context_path: PathBuf,
+    /// Memory/context file evaluated with each request.
+    /// Optional and replaceable by retrieval without changing the interface.
+    /// When absent, the evaluator receives an empty context.
+    #[arg(long, env = "CONTEXT_PATH")]
+    pub context_path: Option<PathBuf>,
 
     /// Public model name announced in /v1/models and in responses.
     #[arg(long, env = "SERVED_MODEL_NAME", default_value = "jev-latest")]
@@ -124,7 +125,7 @@ mod tests {
         assert_eq!(args.host, "0.0.0.0");
         assert_eq!(args.port, 8080);
         assert_eq!(args.model_id, "some-org/some-model");
-        assert_eq!(args.context_path, PathBuf::from("memory.md"));
+        assert_eq!(args.context_path, Some(PathBuf::from("memory.md")));
         assert_eq!(args.served_model_name, "manaca-1");
         restore_environment(snapshot);
     }
@@ -139,7 +140,7 @@ mod tests {
         assert_eq!(args.host, "0.0.0.0");
         assert_eq!(args.port, 8080);
         assert_eq!(args.model_id, "TinyLlama/TinyLlama-1.1B-Chat-v1.0");
-        assert_eq!(args.context_path, PathBuf::from("resources/memory.md"));
+        assert_eq!(args.context_path, None);
         assert_eq!(args.served_model_name, "jev-latest");
         restore_environment(snapshot);
     }
@@ -234,7 +235,7 @@ mod tests {
         std::env::set_var("CONTEXT_PATH", "custom/memory.md");
         let cli = Cli::try_parse_from(["manaca-jev-like", "serve"]).unwrap();
         let Command::Serve(args) = cli.command;
-        assert_eq!(args.context_path, PathBuf::from("custom/memory.md"));
+        assert_eq!(args.context_path, Some(PathBuf::from("custom/memory.md")));
         restore_environment(snapshot);
     }
 
@@ -279,7 +280,10 @@ mod tests {
         assert_eq!(args.host, "0.0.0.0");
         assert_eq!(args.port, 8080);
         assert_eq!(args.model_id, "some-org/flag-model");
-        assert_eq!(args.context_path, PathBuf::from("resources/memory.md"));
+        assert_eq!(
+            args.context_path,
+            Some(PathBuf::from("resources/memory.md"))
+        );
         assert_eq!(args.served_model_name, "flag-model");
         restore_environment(snapshot);
     }

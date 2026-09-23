@@ -44,6 +44,9 @@ pub fn build_shared_state(
     }
 }
 
+/// Name reported when the server runs without a memory context file.
+pub const ABSENT_CONTEXT_NAME: &str = "none";
+
 /// Loads the memory context file, mapping IO failures to a clear message.
 fn load_memory_context(path: &Path) -> anyhow::Result<(String, String)> {
     let context_provider = FileContextProvider::new(path);
@@ -55,6 +58,15 @@ fn load_memory_context(path: &Path) -> anyhow::Result<(String, String)> {
         )
     })?;
     Ok((loaded_context, context_name))
+}
+
+/// Resolves the optional memory context into loaded text and a source name.
+/// A missing path yields an empty context named [`ABSENT_CONTEXT_NAME`].
+fn resolve_memory_context(path: Option<&Path>) -> anyhow::Result<(String, String)> {
+    match path {
+        None => Ok((String::new(), ABSENT_CONTEXT_NAME.to_string())),
+        Some(present_path) => load_memory_context(present_path),
+    }
 }
 
 async fn run_serve_command(serve_arguments: ServeArgs) -> anyhow::Result<()> {
@@ -71,7 +83,8 @@ async fn run_serve_command(serve_arguments: ServeArgs) -> anyhow::Result<()> {
         &model_files.tokenizer,
         &execution_device,
     )?;
-    let (loaded_context, context_name) = load_memory_context(&serve_arguments.context_path)?;
+    let (loaded_context, context_name) =
+        resolve_memory_context(serve_arguments.context_path.as_deref())?;
     let served_model_name = serve_arguments.served_model_name.clone();
     // The HTTP server factory requires 'static state, so the model is
     // heap-leaked once at startup and borrowed for the process lifetime.
@@ -132,21 +145,43 @@ mod tests {
     }
 
     #[test]
-    fn missing_memory_file_reports_its_path() {
+    fn absent_context_resolves_to_empty_text_and_none_name() {
+        let (loaded_context, context_name) = resolve_memory_context(None).unwrap();
+        assert!(loaded_context.is_empty());
+        assert_eq!(context_name, ABSENT_CONTEXT_NAME);
+    }
+
+    #[test]
+    fn present_missing_file_reports_its_path() {
         let missing = Path::new("missing-memory-for-test-12345.md");
-        let error = load_memory_context(missing).unwrap_err();
+        let error = resolve_memory_context(Some(missing)).unwrap_err();
         assert!(error
             .to_string()
             .contains("missing-memory-for-test-12345.md"));
     }
 
     #[test]
-    fn existing_memory_file_loads_with_source_name() {
+    fn serving_without_context_builds_empty_state() {
+        let (loaded_context, context_name) = resolve_memory_context(None).unwrap();
+        let evaluator: Arc<dyn Evaluator + Send + Sync> =
+            Arc::new(MockEvaluator::new("manaca-test-model".to_string()));
+        let state = build_shared_state(
+            evaluator,
+            "manaca-test-model".to_string(),
+            context_name,
+            0.0,
+        );
+        assert!(loaded_context.is_empty());
+        assert_eq!(state.context_name, ABSENT_CONTEXT_NAME);
+    }
+
+    #[test]
+    fn present_memory_file_loads_with_source_name() {
         let path = Path::new("resources/memory.md");
         if !path.exists() {
             return;
         }
-        let (loaded_context, context_name) = load_memory_context(path).unwrap();
+        let (loaded_context, context_name) = resolve_memory_context(Some(path)).unwrap();
         assert!(loaded_context.contains("GreenLeaf"));
         assert_eq!(context_name, "file:resources/memory.md");
     }
