@@ -71,7 +71,7 @@ async fn run_serve_command(serve_arguments: ServeArgs) -> anyhow::Result<()> {
         &model_files.tokenizer,
         &execution_device,
     )?;
-    let (loaded_context, context_name) = load_memory_context(&serve_arguments.context)?;
+    let (loaded_context, context_name) = load_memory_context(&serve_arguments.context_path)?;
     let served_model_name = serve_arguments.served_model_name.clone();
     // The HTTP server factory requires 'static state, so the model is
     // heap-leaked once at startup and borrowed for the process lifetime.

@@ -30,6 +30,17 @@ Sem o `HF_TOKEN`, o download dos pesos falha com erro `401`
 (`failed to download ... status code 401`) — esse é o
 comportamento esperado, não um bug.
 
+## Variáveis de ambiente
+
+Toda opção do `serve` também pode vir de ambiente
+(flag CLI > env > default): `HOST`, `PORT`,
+`MODEL_ID`, `CONTEXT_PATH`,
+`SERVED_MODEL_NAME` (e `HF_TOKEN` para `--hf-token`).
+
+```bash
+PORT=9090 MODEL_ID=recogna-nlp/bode-1b-instruct cargo run -- serve
+```
+
 ## Pedidos `curl`
 
 Booleano simples (elegibilidade de reembolso de cobrança duplicada):
