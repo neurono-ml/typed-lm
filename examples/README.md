@@ -13,6 +13,23 @@ cargo run -- serve
 O servidor sobe por padrão em `http://127.0.0.1:8080`
 com o contexto `resources/memory.md`.
 
+## Modelos com acesso restrito (gated)
+
+O modelo padrão (`TinyLlama/TinyLlama-1.1B-Chat-v1.0`) é público
+e não precisa de autenticação. Se você trocar para um modelo
+com acesso restrito via `--model-id` (por exemplo
+`recogna-nlp/bode-1b-instruct`), é preciso aceitar as condições
+de uso na página do modelo no Hugging Face e exportar um token
+com permissão de leitura antes de subir o servidor:
+
+```bash
+HF_TOKEN=hf_seu_token_aqui cargo run -- serve --model-id recogna-nlp/bode-1b-instruct
+```
+
+Sem o `HF_TOKEN`, o download dos pesos falha com erro `401`
+(`failed to download ... status code 401`) — esse é o
+comportamento esperado, não um bug.
+
 ## Pedidos `curl`
 
 Booleano simples (elegibilidade de reembolso de cobrança duplicada):
