@@ -1,0 +1,88 @@
+@host = http://localhost:8080
+
+### Pergunta booleana simples (elegibilidade de reembolso de cobrança duplicada)
+POST {{host}}/v1/systemone
+Content-Type: application/json
+
+{
+  "model": "jev-latest",
+  "state": "The customer found a duplicate charge for order #4821 on their credit card. The duplicate charge is 60 days old and they request a full refund of the duplicate.",
+  "questions": {
+    "refund_eligible": {
+      "type": "noul",
+      "instructions": "The customer is eligible for a full refund under the store policy."
+    }
+  }
+}
+
+### Booleano + roteamento + urgência (item danificado no transporte)
+POST {{host}}/v1/systemone
+Content-Type: application/json
+
+{
+  "model": "jev-latest",
+  "state": "Order #7710 arrived with a smashed box and a cracked vase inside. Delivery was 3 days ago and the customer asks what to do next.",
+  "questions": {
+    "refund_eligible": {
+      "type": "noul",
+      "instructions": "The customer is eligible for a full refund under the store policy."
+    },
+    "responsible_department": {
+      "type": "choice",
+      "instructions": "Which department should handle this case?",
+      "criteria": {
+        "billing": "Double charges and payment errors",
+        "logistics": "Damaged, lost, or late shipments",
+        "product_support": "Defective-item troubleshooting, replacements, and setup help"
+      }
+    },
+    "urgency": {
+      "type": "score",
+      "instructions": "How urgent is this case?",
+      "criteria": ["Routine", "Urgent", "Emergency"]
+    }
+  }
+}
+
+### Perguntas complexas ancoradas na memória (purificador de ar de uso médico)
+# Exige o servidor com --context-path resources/memory.md
+POST {{host}}/v1/systemone
+Content-Type: application/json
+
+{
+  "model": "jev-latest",
+  "state": "The customer received a medical-grade air purifier they depend on daily for a respiratory condition. It arrived 5 days ago with a cracked casing, does not power on, and troubleshooting by phone failed. They request a full refund of 1200 dollars and a working unit as fast as possible.",
+  "questions": {
+    "refund_eligible": {
+      "type": "noul",
+      "instructions": "The customer is eligible for a full refund under the store policy."
+    },
+    "responsible_department": {
+      "type": "choice",
+      "instructions": "Which department should handle this case?",
+      "criteria": {
+        "billing": "Double charges and payment errors",
+        "logistics": "Damaged, lost, or late shipments",
+        "product_support": "Defective-item troubleshooting, replacements, and setup help"
+      }
+    },
+    "urgency": {
+      "type": "score",
+      "instructions": "How urgent is this case?",
+      "criteria": ["Routine", "Urgent", "Emergency"]
+    },
+    "gift_card_refundable": {
+      "type": "noul",
+      "instructions": "A gift card bought in the same order is eligible for a cash refund under the store policy."
+    }
+  }
+}
+
+### Lista os modelos servidos
+GET {{host}}/v1/models
+
+### Saúde do serviço (inclui tempo de carga do modelo)
+GET {{host}}/health
+
+### Liveness (não depende do modelo)
+GET {{host}}/health/live
