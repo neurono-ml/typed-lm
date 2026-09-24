@@ -15,15 +15,15 @@ services:
               count: all
               capabilities: [gpu]
     volumes:
-      - ..:/workspaces/manaca-jev-like:cached
+      - ..:/workspaces/typed-lm:cached
       - ~/.config/opencode/:/home/vscode/.config/opencode:cached
       - ~/.opencode/:/home/vscode/.opencode:cached
       - ~/.config/openspec/:/home/vscode/.config/openspec:cached
       - ~/.cache/huggingface/:/home/vscode/.cache/huggingface:cached
       - ~/.local/:/home/vscode/.local/
       - cargo-cache:/usr/local/cargo/registry
-      - target-cache:/workspaces/manaca-jev-like/target
-    working_dir: /workspaces/manaca-jev-like
+      - target-cache:/workspaces/typed-lm/target
+    working_dir: /workspaces/typed-lm
     command: sleep infinity
     depends_on:
       - jaeger

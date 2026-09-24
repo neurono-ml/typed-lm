@@ -7,7 +7,7 @@ As respostas dependem dos fatos de `resources/memory.md`
 ## Subir o servidor
 
 ```bash
-cargo run -- serve
+cargo run -p typed-lm-serve
 ```
 
 O servidor sobe por padrão em `http://127.0.0.1:8080`
@@ -17,7 +17,7 @@ para ancorar as respostas nos fatos de exemplo.
 
 ## Modelos com acesso restrito (gated)
 
-O modelo padrão (`menezesbruno/manaca-1b-base`) é público
+O modelo padrão (`Qwen/Qwen2.5-1.5B-Instruct`) é público
 e não precisa de autenticação. Se você trocar para um modelo
 com acesso restrito via `--model-id` (por exemplo
 `recogna-nlp/bode-1b-instruct`), é preciso aceitar as condições
@@ -25,7 +25,7 @@ de uso na página do modelo no Hugging Face e exportar um token
 com permissão de leitura antes de subir o servidor:
 
 ```bash
-HF_TOKEN=hf_seu_token_aqui cargo run -- serve --model-id recogna-nlp/bode-1b-instruct
+HF_TOKEN=hf_seu_token_aqui cargo run -p typed-lm-serve -- --model-id recogna-nlp/bode-1b-instruct
 ```
 
 Sem o `HF_TOKEN`, o download dos pesos falha com erro `401`
@@ -34,13 +34,13 @@ comportamento esperado, não um bug.
 
 ## Variáveis de ambiente
 
-Toda opção do `serve` também pode vir de ambiente
+Toda opção do `typed-lm-serve` também pode vir de ambiente
 (flag CLI > env > default): `HOST`, `PORT`,
 `MODEL_ID`, `CONTEXT_PATH`,
 `SERVED_MODEL_NAME` (e `HF_TOKEN` para `--hf-token`).
 
 ```bash
-PORT=9090 MODEL_ID=recogna-nlp/bode-1b-instruct cargo run -- serve
+PORT=9090 MODEL_ID=recogna-nlp/bode-1b-instruct cargo run -p typed-lm-serve
 ```
 
 ## Pedidos `curl`
@@ -78,5 +78,5 @@ na memória. Ele é marcado com `#[ignore]` e **não** roda no CI.
 Para executá-lo (baixa os pesos uma vez para o cache local):
 
 ```bash
-cargo test -- --ignored
+cargo test --workspace -- --ignored
 ```

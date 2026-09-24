@@ -1,26 +1,41 @@
-# manaca-jev-like
+# typed-lm
 
-Deterministic inference server in Rust, part of the **Sciencekit** ecosystem.
-It replaces autoregressive text generation with classification in a
-*single forward pass*: each question is answered from the *logits* of a
-Llama-style model (e.g.: Manacá-1B) executed locally with
-[Candle](https://github.com/huggingface/candle).
+Monorepo Rust para **inferência determinística** e **treino de adapters** de
+modelos estilo Llama/Qwen2, parte do ecossistema **Sciencekit**. Em vez de geração
+autorregressiva, o servidor classifica respostas em uma *single forward pass*:
+cada pergunta é respondida a partir dos *logits* de um modelo local executado com
+[Candle](https://github.com/huggingface/candle). O treinador produz adapters
+LoRA/QLoRA e artefatos quantizados (FP8/FP4) que o servidor consome diretamente.
 
-The HTTP API is compatible with the **Jev (TypeSafe AI)** format: the client sends
-`state` (the case facts) and `questions` (noul/choice/score with instructions and
-criteria) and receives typed answers — no free text.
+A API HTTP é compatível com o formato **Jev (TypeSafe AI)**: o cliente envia
+`state` (fatos do caso) e `questions` (`noul`/`choice`/`score` com instruções e
+critérios) e recebe respostas tipadas — sem texto livre.
 
-## Routes
+## Workspace
+
+| Crate | Papel | Tipo |
+|---|---|---|
+| `typed-lm-common` | Contrato Jev, labels, rendering de prompt, detecção de checkpoint, device/dtype, quantização | lib |
+| `typed-lm-serve` | Servidor Actix compatível com Jev (binário sem subcomando) | bin |
+| `typed-lm-trainer` | Fine-tuning LoRA/QLoRA e quantização pós-treino (subcomandos `train`/`quantize`) | bin + lib |
+
+```bash
+cargo build --workspace
+cargo run -p typed-lm-serve -- --help
+cargo run -p typed-lm-trainer -- --help
+```
+
+## Rotas (`typed-lm-serve`)
 
 ### `POST /v1/systemone`
 
-Evaluates one or more questions (`noul`, `choice` and `score` can be combined
-in the same request). The `model` field must be the served name (see
-`--served-model-name`) or any alias with the `jev-` prefix. Validation is
-structural: `questions` cannot be empty, `choice` requires at least one
-criterion and `score` requires 2 to 10 levels.
+Avalia uma ou mais perguntas (`noul`, `choice` e `score` podem ser combinados na
+mesma requisição). O campo `model` deve ser o nome servido (ver
+`--served-model-name`) ou qualquer alias com o prefixo `jev-`. A validação é
+estrutural: `questions` não pode ser vazio, `choice` exige ao menos um critério e
+`score` exige de 2 a 10 níveis.
 
-Request (see `examples/request_mixed.json`):
+Request (ver `examples/request_mixed.json`):
 
 ```json
 {
@@ -49,7 +64,7 @@ Request (see `examples/request_mixed.json`):
 }
 ```
 
-Response (format; values vary by model and context):
+Response (formato; valores variam por modelo e contexto):
 
 ```json
 {
@@ -74,87 +89,62 @@ Response (format; values vary by model and context):
 }
 ```
 
-Semantics per type:
+Semântica por tipo:
 
-- `noul`: probability of the affirmative answer in the `noul` field (0.0 to 1.0).
-- `choice`: winning label in `choice`, distribution in `probabilities` and
+- `noul`: probabilidade da resposta afirmativa no campo `noul` (0.0 a 1.0).
+- `choice`: rótulo vencedor em `choice`, distribuição em `probabilities` e
   `confidence`.
-- `score`: expected value over the levels in `score`, index-to-name legend in
-  `legend`, distribution in `probabilities` and `confidence`.
+- `score`: valor esperado sobre os níveis em `score`, legenda índice→nome em
+  `legend`, distribuição em `probabilities` e `confidence`.
 
-Errors follow the `{"error": {"message": "..."}}` envelope: invalid body or
-out-of-contract question returns `422`, unknown model returns `404` and
-inference failure returns `500`.
+Erros seguem o envelope `{"error": {"message": "..."}}`: corpo inválido ou
+pergunta fora do contrato retorna `422`, modelo desconhecido `404` e falha de
+inferência `500`.
 
 ### `GET /v1/models`
 
-Lists the served model plus the `jev-latest` alias:
-
-```bash
-curl -s http://127.0.0.1:8080/v1/models
-```
+Lista o modelo servido mais o alias `jev-latest`:
 
 ```json
 {
   "object": "list",
-  "data": [{ "id": "jev-latest", "object": "model", "owned_by": "manaca" }],
+  "data": [{ "id": "jev-latest", "object": "model", "owned_by": "typed-lm" }],
   "models": [{ "name": "jev-latest", "description": "Jev-compatible model served from context '...'", "release_date": "unknown" }]
 }
 ```
 
-### `GET /health` and `GET /health/live`
+### `GET /health` e `GET /health/live`
 
-```bash
-curl -s http://127.0.0.1:8080/health
-curl -s http://127.0.0.1:8080/health/live
-```
+`/health` retorna `{"status": "ok", "startup_seconds": 12.3}` (tempo de carga do
+modelo no startup); `/health/live` retorna `{"status": "ok"}` e não depende do
+modelo.
 
-`/health` returns `{"status": "ok", "startup_seconds": 12.3}` (model load time
-at startup); `/health/live` returns `{"status": "ok"}` and does not depend
-on the model.
+## Quickstart do servidor
 
-## Quickstart
-
-Prerequisites: stable Rust (the binary is called `manaca-typed`, see
-`Cargo.toml`).
+Pré-requisitos: Rust estável.
 
 ```bash
 cargo build
-cargo run -- serve
+cargo run -p typed-lm-serve
 ```
 
-The server listens on `0.0.0.0:8080` by default (access it via
-`http://127.0.0.1:8080`). On first startup it downloads the default model weights
-to the local Hugging Face cache.
-
-Example requests (server running in another terminal):
+O servidor escuta em `0.0.0.0:8080` por padrão (`http://127.0.0.1:8080`). No
+primeiro startup ele baixa os pesos do modelo padrão para o cache local do
+Hugging Face.
 
 ```bash
 curl -s http://127.0.0.1:8080/v1/systemone \
   -H 'Content-Type: application/json' \
   -d @examples/request_noul.json
 
-curl -s http://127.0.0.1:8080/v1/systemone \
-  -H 'Content-Type: application/json' \
-  -d @examples/request_mixed.json
-
-curl -s http://127.0.0.1:8080/v1/systemone \
-  -H 'Content-Type: application/json' \
-  -d @examples/request_context.json
+# Ancorado nos fatos fictícios da loja GreenLeaf (resources/memory.md):
+cargo run -p typed-lm-serve -- --context-path resources/memory.md
 ```
 
-The examples use the fictional GreenLeaf store facts described in
-`examples/README.md`. Without a context (`--context-path` missing) the evaluator
-receives an empty context; to ground answers in the example facts:
+## Configuração do servidor
 
-```bash
-cargo run -- serve --context-path resources/memory.md
-```
-
-## Configuration
-
-Every `serve` option can also come from an environment variable
-(CLI flag > env > default). Verified against `cargo run -- serve --help`:
+Cada opção do `serve` também pode vir de variável de ambiente
+(flag CLI > env > default). Verificado em `cargo run -p typed-lm-serve -- --help`:
 
 | CLI Flag | Environment Variable | Default |
 |---|---|---|
@@ -174,93 +164,142 @@ Every `serve` option can also come from an environment variable
 
 ### Session prefix cache
 
-The expensive part of a request is the forward pass over the *state* prefix
-(the system context plus the request `state`). The server tokenizes
-`system + state` once and retains the resulting key/value cache in a bounded
-least-recently-used cache keyed by a canonical hash of the state. A state that
-reappears across requests therefore skips that forward pass. The cache is
-bounded by both the number of entries (`--session-cache-entries`) and the total
-number of cached tokens (`--session-cache-tokens`); the least recently used
-entries are evicted first. Setting either bound to `0` disables session
-caching. The cached key/value cache is never mutated: every request clones it
-before use.
+A parte cara de uma requisição é o forward pass sobre o prefixo do *state*
+(contexto de sistema + `state`). O servidor tokeniza `system + state` uma vez e
+retém o KV-cache resultante em um cache LRU limitado, indexado por um hash
+canônico do state. Um state que reaparece entre requisições pula esse forward
+pass. O cache é limitado pelo número de entradas (`--session-cache-entries`) e
+pelo total de tokens cacheados (`--session-cache-tokens`); as entradas menos
+recentes são descartadas primeiro. Zerar qualquer limite desabilita o cache de
+sessão. O cache retido **nunca** é mutado: cada requisição clona antes de usar.
 
-Example with environment:
+### Modelos restritos e `HF_TOKEN`
 
-```bash
-PORT=9090 MODEL_ID=recogna-nlp/bode-1b-instruct cargo run -- serve
-```
-
-### Restricted (gated) models and `HF_TOKEN`
-
-The default model (`menezesbruno/manaca-1b-base`) is public and requires no
-authentication. If you switch to a restricted-access model via
-`--model-id` (for example `recogna-nlp/bode-1b-instruct`), accept the terms of use
-on the model page on Hugging Face and export a token with read permission before
-starting the server:
+Se você trocar para um modelo de acesso restrito via `--model-id`, aceite os
+termos de uso na página do modelo e exporte um token com permissão de leitura
+antes de subir o servidor:
 
 ```bash
-HF_TOKEN=hf_your_token_here cargo run -- serve --model-id recogna-nlp/bode-1b-instruct
+HF_TOKEN=hf_seu_token cargo run -p typed-lm-serve -- --model-id recogna-nlp/bode-1b-instruct
 ```
 
-Without the token, the weight download fails with a `401` error
-(`failed to download ... status code 401`) — expected behavior, not a
-bug. Details and more examples in `examples/README.md`.
+Sem o token, o download falha com `401` — comportamento esperado, não bug.
 
-At startup the repository is inspected before downloading: if it does not
-expose `config.json`, `tokenizer.json` and `model.safetensors`, the server
-reports it as *not a servable checkpoint* instead of a misleading `404` or
-gating hint. This is the case for code-only repositories that share a model
-name, such as `harshatheg/Qwen-2.5-1B-RLCD` (the parallel-constrained-decoding
-demo source, whose checkpoint is Qwen2.5/MLX and is not loadable here).
+### Modelos, layouts e arquiteturas suportados
 
-### Supported models, layouts and architectures
+O checkpoint é detectado automaticamente:
 
-The checkpoint is detected automatically:
+- **Layouts**: safetensors (único ou *sharded*), GGUF (denso ou GGML-quantizado,
+  ex.: `Q4_K_M`), PyTorch `.pth`/`.bin` e NumPy `.npz`.
+- **Arquiteturas**: Llama e Qwen2.
+- **Weight kinds**: precisão completa (`BF16`/`F16`/`F32`), GGML-quantizado
+  (GGUF), e **FP8 (`F8_E4M3`/`F8_E5M2`) e FP4 (MXFP4)** — estes últimos são
+  **dequantizados no load** para denso F32, já que o Candle não traz kernel de
+  matmul nesses tipos. `GPTQ`/`AWQ` seguem rejeitados com erro descritivo.
 
-- **Layouts**: safetensors (single file or sharded), GGUF (dense or
-  GGML-quantized, e.g. `Q4_K_M`), PyTorch `.pth`/`.bin` and NumPy `.npz`.
-- **Architectures**: Llama and Qwen2.
-- **Weight kinds**: full precision (`BF16`/`F16`/`F32`) and GGML-quantized
-  (GGUF). `FP8`/`F8_E4M3`, `GPTQ` and `AWQ` are rejected at startup with a
-  descriptive error instead of panicking inside `Llama::load`. For example
-  `liodon-ai/manaca-1b-base-FP8` (168 `F8_E4M3` tensors) is not loadable;
-  supporting `FP8` would require dequantizing at load time.
+## Treino e quantização (`typed-lm-trainer`)
+
+O treinador aplica LoRA/QLoRA sobre um checkpoint-base congelado, otimizando a
+**cross-entropy na posição de decisão** (o último token do prompt, restrito aos
+candidatos) — a mesma posição que o servidor lê no inference — com KL de
+calibração opcional. O dataset é **Jev-native**: cada pergunta do contrato às
+respostas ganha um campo `answer`.
+
+### Formato do dataset
+
+Um arquivo `.jsonl` (um registro por linha) ou `.json` (objeto único ou array).
+Um diretório é varrido recursivamente (`discovery`).
+
+```json
+{
+  "state": "charged twice",
+  "questions": {
+    "refund": { "type": "noul", "instructions": "Refund?", "answer": "yes" },
+    "dept": {
+      "type": "choice", "instructions": "Dept?",
+      "criteria": { "billing": "Payments", "technical": "Bugs" },
+      "answer": "technical"
+    },
+    "urg": {
+      "type": "score", "instructions": "Urgent?",
+      "criteria": ["Routine", "Urgent", "Emergency"],
+      "answer": "Urgent"
+    }
+  }
+}
+```
+
+A `answer` é semântica (`yes`/`no`, nome da opção, nome do nível) e é mapeada
+para o rótulo de planilha (`A`, `B`, …) que o servidor pontua.
+
+### Treinar um adapter
 
 ```bash
-cargo run -- serve --model-id menezesbruno/manaca-1b-base --served-model-name manaca
+cargo run -p typed-lm-trainer -- train \
+  --model-id /caminho/local/do/checkpoint \
+  --dataset resources/dataset.jsonl \
+  --output-directory output/train \
+  --method lora --lora-rank 16 --lora-alpha 32 \
+  --epochs 3 --batch-size 4 --learning-rate 1e-4 \
+  --max-sequence-length 1024
 ```
 
-## Acceleration
+Flags principais do `train`: `--method lora|qlora`, `--lora-rank`, `--lora-alpha`,
+`--lora-dropout`, `--epochs`, `--batch-size`, `--gradient-accumulation-steps`,
+`--learning-rate`, `--warmup-steps`, `--weight-decay`, `--maximum-gradient-norm`,
+`--max-sequence-length`, `--minimum-improvement`, `--early-stop-patience`,
+`--quantization none|fp8|fp4`, `--quantization-mode post-training|training`.
+Veja `cargo run -p typed-lm-trainer -- train --help`.
+
+Ao final são gravados `adapter.safetensors` e `adapter_config.json` no
+`--output-directory`.
+
+### Quantizar (PTQ)
+
+```bash
+cargo run -p typed-lm-trainer -- quantize \
+  --model-id /caminho/local/do/checkpoint \
+  --adapter-directory output/train \
+  --quantization fp8 \
+  --output-directory output/quantized
+```
+
+O merge LoRA→base é feito (quando `--adapter-directory` é informado) e a
+quantização pós-treino (PTQ) gera `model.safetensors` + `quantization_config.json`.
+`FP4` é gravado como nibbles empacotados em `U8` + expoentes (`*_scale`), pois o
+safetensors/Candle não converte `F4`; o loader dequantiza ambos para denso F32.
+
+### Paridade CPU/CUDA
+
+`PrecisionPolicy { master: F32, compute: F32(CPU)/BF16(GPU), reduction: F32 }`
+mantém peso-mestre e otimizador em **F32** e usa BF16 apenas como precisão de
+compute em GPU, preservando a qualidade do adapter entre dispositivos. Paridade
+**funcional**, não de velocidade: treino real roda em CUDA; CI/testes rodam em
+CPU com modelos dummy ou casos `#[ignore]`.
+
+## Aceleração do servidor
 
 ### CPU
 
-For CPU inference the recommended mode is a GGUF `Q4_K_M` checkpoint (roughly
-halves the per-request cost of the `F32` dense path) combined with the `mkl`
-feature (Intel MKL BLAS) and the built-in fused CPU flash attention. The
-vendored attention uses `candle_nn::attention::flash_attn` on the CPU
-automatically — no flag needed — and keeps grouped query attention grouped.
-`--model-dtype` stays `auto` (F32 on CPU).
+Para inferência em CPU o modo recomendado é um checkpoint GGUF `Q4_K_M`
+(aproximadamente metade do custo por requisição do caminho denso `F32`) combinado
+com a feature `mkl` (Intel MKL BLAS) e a atenção *flash* fundida da CPU (usada
+automaticamente, mantendo GQA agrupado). `--model-dtype` fica `auto` (F32 em CPU).
 
 ```bash
-cargo build --release --features mkl
-# GGUF Q4_K_M (tokenizer borrowed from the full-precision repo):
-TOKENIZER=$(find ~/.cache/huggingface/hub/models--Qwen--Qwen2.5-1.5B-Instruct \
-  -name tokenizer.json | head -1)
-cargo run --release --features mkl -- serve \
+cargo build --release -p typed-lm-serve --features mkl
+cargo run --release -p typed-lm-serve --features mkl -- \
   --model-id Qwen/Qwen2.5-1.5B-Instruct-GGUF \
   --weights-file qwen2.5-1.5b-instruct-q4_k_m.gguf \
-  --tokenizer-file "$TOKENIZER" \
   --context-path resources/memory.md
 ```
 
-`.cargo/config.toml` already sets `target-cpu=native`; only build and run on the
-same machine (remove it when cross-compiling).
+`.cargo/config.toml` já define `target-cpu=native`; compile e execute na mesma
+máquina (remova em cross-compile).
 
-#### Measured CPU gains
+#### Ganhos medidos em CPU
 
-`reports_latency_breakdown` (release, Qwen2.5-1.5B dense, `F32`) over the same
-prefill/suffix/decode workload:
+`reports_latency_breakdown` (release, Qwen2.5-1.5B denso, `F32`):
 
 | Prefix | Stage | Baseline | + CPU flash | + MKL |
 |---|---|---|---|---|
@@ -274,34 +313,23 @@ prefill/suffix/decode workload:
 | 256 | single next token | 811 ms | 347 ms | **175 ms** |
 | 1024 | single next token | 815 ms | 545 ms | **300 ms** |
 
-The session cache removes the state-prefix prefill from repeated requests over
-the same state; combined with MKL, short-context requests land in the hundreds
-of milliseconds (see `session_cache_reuses_state_prefix_and_preserves_answers`).
-
-> `intel-mkl-src` 0.8.1 bundles Intel MKL 2020.1, which does not export the
-> half-precision `hgemm_` symbol that `candle-core`'s `mkl` feature references
-> (the CPU path always computes in `F32`, but the reference still breaks the
-> link). `src/infrastructure/mkl_f16_shim.rs` supplies an `hgemm_` built on
-> MKL's `sgemm_`, so the `mkl` feature links and half-precision calls remain
-> correct.
-
 ### GPU (CUDA) via devcontainer
 
-The host needs the NVIDIA driver and the NVIDIA container toolkit
-(`nvidia-ctk runtime configure --runtime=docker`). The devcontainer installs
-the CUDA toolkit (`nvcc`) through the `nvidia-cuda` feature and requests the GPU
-in `docker-compose.yml`, so the host needs no CUDA toolkit of its own:
+O host precisa do driver NVIDIA e do NVIDIA container toolkit
+(`nvidia-ctk runtime configure --runtime=docker`). O devcontainer instala o
+toolkit CUDA (`nvcc`) via feature `nvidia-cuda` e reserva a GPU no
+`docker-compose.yml`.
 
 ```bash
-cargo build --release --features cuda
-cargo run --release --features cuda -- serve \
+cargo build --release -p typed-lm-serve --features cuda
+cargo run --release -p typed-lm-serve --features cuda -- \
   --model-id Qwen/Qwen2.5-1.5B-Instruct --context-path resources/memory.md
 ```
 
-`auto` selects `F16` weights on CUDA. Verify the GPU is visible with
-`nvidia-smi` inside the container (`nvcc` is put on `PATH` automatically).
+`auto` seleciona pesos `F16` em CUDA. Verifique a GPU com `nvidia-smi` dentro do
+container.
 
-#### Measured GPU latency
+#### Latência medida em GPU
 
 `reports_latency_breakdown` (release, Qwen2.5-1.5B, `F16`, RTX 3070):
 
@@ -311,65 +339,50 @@ cargo run --release --features cuda -- serve \
 | 256 | 31 ms | 81 ms | 65 ms |
 | 1024 | 154 ms | 379 ms | 64 ms |
 
-## Tests
+## Testes
 
 ```bash
-cargo test
-cargo test -- --ignored --nocapture
-cargo clippy --all-targets
+cargo test --workspace
+cargo test --workspace -- --ignored --nocapture
+cargo clippy --workspace --all-targets
 cargo fmt --check
 ```
 
-- `cargo test`: unit tests (probability calibration, labels, prompt rendering,
-  session-cache eviction, CPU flash attention against a matmul reference) and
-  API integration via `actix_web::test` with a mocked evaluator
-  (`MockEvaluator`), without downloading weights.
-- `cargo test -- --ignored --nocapture`: *live* tests, marked with `#[ignore]`;
-  download the real weights once. They validate the vendored model against
-  upstream (`vendored_forward_matches_candle_llama`,
-  `vendored_forward_matches_candle_qwen2`), the batched broadcast against
-  sequential scoring (`batched_suffixes_match_sequential`), the structured
-  tokenization against the monolithic prompt
-  (`prefix_reuse_matches_monolithic_forward`), the session cache correctness
-  and gain (`session_cache_reuses_state_prefix_and_preserves_answers`) and the
-  latency breakdown (`reports_latency_breakdown`). Do not run in CI.
-- `cargo clippy --all-targets` / `cargo fmt --check`: lint and formatting. Do
-  not use `--all-features` on Linux (the Metal feature needs macOS).
+- `cargo test --workspace`: testes unitários de calibração de probabilidades,
+  labels, rendering de prompt, evicção do session cache, atenção flash da CPU
+  contra referência matmul/softmax, quantização FP8/FP4, dataset/collate, LoRA e
+  loop de treino (com dummies) e integração de API via `actix_web::test` com
+  `MockEvaluator` — sem download de pesos.
+- `cargo test --workspace -- --ignored`: testes *live*, marcados com `#[ignore]`;
+  baixam pesos reais uma vez (equivalência com o upstream, ganho do cache de
+  sessão, benchmark de latência, carregamento de artefatos FP8/FP4). Não rodar no CI.
+- `cargo clippy --workspace --all-targets` / `cargo fmt --check`: lint e
+  formatação. Não use `--all-features` no Linux (a feature Metal exige macOS).
 
-## Architecture
+## Arquitetura
 
-- **HTTP (`src/api/`)**: `actix-web` with `web::scope("/v1")` (`POST
-  /v1/systemone`, `GET /v1/models`) and the `GET /health` and
-  `GET /health/live` routes. *Handlers* receive a `SharedState` (evaluator +
-  model name + context name + startup time) via `web::Data`.
-- **Orchestration (Rig)**: the evaluator builds the conversation history with
-  `rig-core` types — the loaded context as a `system` message and the
-  `state` + question text as a `user` message — and renders the single prompt
-  evaluated by the model. Rig does not expose logprobs: it organizes, it does not
-  score.
-- **Scoring (Candle)**: `CandleEvaluator` prefills the fixed system context
-  into a KV-cache **once at startup**. Each request then performs a *single
-  shared prefill* of the tokens common to all its questions (the `state`
-  prefix plus the common question prefix). That shared cache is **broadcast
-  across the attention batch dimension** and every question suffix is evaluated
-  in a **single batched forward pass** — the common prefix is never recomputed
-  per question. The state prefix (`system + state`) is additionally retained in
-  a bounded LRU cache keyed by a hash of the state, so a reappearing state skips
-  its forward pass entirely. It reads the *logit* of each answer-label token
-  (`A`, `B`, …) at each row's last position and calibrates the distribution
-  (binary softmax for `noul`, temperature softmax for `choice`/`score`). This is
-  the "parallel evaluation via KV-cache broadcasting" pattern; the broadcast
-  cache is discarded after the batched pass and the cached prefix is never
-  mutated.
-- **Parallel forward (`src/infrastructure/parallel_llama.rs`)**: a vendored,
-  batch-broadcastable Llama implementation. Upstream `candle-transformers`
-  keeps its KV-cache private and only returns last-position logits, which
-  prevents both broadcasting and per-row collection; the vendored variant
-  exposes `broadcast_batch` and `logits_from_hidden_at_positions`. On the CPU
-  it runs the fused flash-style attention kernel, keeping grouped query
-  attention grouped; on accelerators it keeps the matmul/softmax path. It is
-  validated against upstream `Llama`/`Qwen2` by ignored equivalence tests.
-- **Context (`ContextProvider`)**: currently implemented as
-  `FileContextProvider` (e.g.: `--context-path resources/memory.md`); the
-  interface allows swapping the source for retrieval (RAG) in the future without
-  changing *handlers*, evaluator or API.
+- **HTTP (`typed-lm-serve/src/api/`)**: `actix-web` com `web::scope("/v1")`
+  (`POST /v1/systemone`, `GET /v1/models`) e `GET /health`, `GET /health/live`.
+  Os *handlers* recebem um `SharedState` (avaliador + nome do modelo + nome do
+  contexto + tempo de startup) via `web::Data`.
+- **Contrato compartilhado (`typed-lm-common`)**: os DTOs de requisição, a
+  aritmética de labels e o rendering do prompt vivem na *common*, de modo que
+  servidor e treinador produzam prompts byte-idênticos e concordem sobre a
+  posição de decisão.
+- **Scoring (Candle)**: `CandleEvaluator` prefila o contexto de sistema fixo em
+  um KV-cache **uma vez no startup**. Cada requisição faz um *single shared
+  prefill* dos tokens comuns às perguntas, **broadcast** do cache na dimensão de
+  batch de atenção, e avalia cada sufixo de pergunta em **um único forward
+  pass batelado**. O prefixo de state (`system + state`) é retido num LRU
+  limitado. Lê o *logit* de cada token de rótulo (`A`, `B`, …) na última posição
+  e calibra a distribuição (softmax binária para `noul`, temperatura para
+  `choice`/`score`).
+- **Forward paralelo (`typed-lm-serve/src/infrastructure/parallel_llama.rs`)**:
+  implementação Llama vendorizada e broadcastável. Valida contra o upstream
+  `Llama`/`Qwen2` por testes de equivalência `#[ignore]`.
+- **Treino (`typed-lm-trainer/src/`)**: `dataset` (discovery/record/loader/collate),
+  `model` (precision/LoRA/forward diferenciável/weight_loading),
+  `training` (loss/optimizer/checkpoint/loop) e `quantization` (export).
+- **Context (`ContextProvider`)**: atualmente `FileContextProvider` (ex.:
+  `--context-path resources/memory.md`); a interface permite trocar a fonte por
+  retrieval (RAG) no futuro sem mudar handlers, avaliador ou API.
