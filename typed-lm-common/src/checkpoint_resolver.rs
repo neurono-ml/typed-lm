@@ -337,11 +337,29 @@ pub fn read_architecture_from_config(config_file: &Path) -> anyhow::Result<Model
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("'{}' has no 'model_type' field", config_file.display()))?;
     ModelArchitecture::from_model_type(model_type).ok_or_else(|| {
+        let rejection_note = if is_rejected_family(model_type) {
+            " mixture-of-experts and multi-head-latent-attention architectures are NOT supported"
+        } else {
+            ""
+        };
         anyhow::anyhow!(
-            "unsupported model_type '{model_type}' in '{}': only llama and qwen2 are supported",
-            config_file.display()
+            "unsupported model_type '{model_type}' in '{}': supported dense architectures are [{}].{rejection_note}",
+            config_file.display(),
+            ModelArchitecture::supported_names()
         )
     })
+}
+
+/// Whether a `model_type` names a deliberately excluded family.
+///
+/// Mixture-of-experts (`mixtral`, `qwen3_moe`) and multi-head-latent-attention
+/// (`deepseek_v2`/`deepseek2`, `deepseek_v3`) checkpoints are not dense and are
+/// rejected with an explicit, testable message.
+fn is_rejected_family(model_type: &str) -> bool {
+    matches!(
+        model_type.to_ascii_lowercase().as_str(),
+        "mixtral" | "qwen3_moe" | "deepseek_v2" | "deepseek_v3" | "deepseek2"
+    )
 }
 
 /// Lists the file names directly under a directory (sorted for determinism).
@@ -495,12 +513,73 @@ mod tests {
     }
 
     #[test]
-    fn unknown_architecture_is_rejected() -> anyhow::Result<()> {
+    fn qwen3_is_now_accepted() -> anyhow::Result<()> {
         let directory = tempfile::tempdir()?;
         let config = directory.path().join(CONFIG_NAME);
         std::fs::write(&config, br#"{"model_type": "qwen3"}"#)?;
+        assert_eq!(
+            read_architecture_from_config(&config)?,
+            ModelArchitecture::Qwen3
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn every_dense_family_is_read_from_config_json() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let families = [
+            ("llama", ModelArchitecture::Llama),
+            ("qwen2", ModelArchitecture::Qwen2),
+            ("qwen3", ModelArchitecture::Qwen3),
+            ("mistral", ModelArchitecture::Mistral),
+            ("gemma", ModelArchitecture::Gemma),
+            ("gemma2", ModelArchitecture::Gemma2),
+            ("gemma3", ModelArchitecture::Gemma3),
+        ];
+        for (index, (name, expected)) in families.into_iter().enumerate() {
+            let config = directory.path().join(format!("config-{index}.json"));
+            std::fs::write(&config, format!(r#"{{"model_type": "{name}"}}"#))?;
+            assert_eq!(read_architecture_from_config(&config)?, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn moe_and_mla_families_are_rejected_with_an_actionable_message() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        for (index, name) in ["mixtral", "qwen3_moe", "deepseek_v2", "deepseek_v3"]
+            .into_iter()
+            .enumerate()
+        {
+            let config = directory.path().join(format!("config-{index}.json"));
+            std::fs::write(&config, format!(r#"{{"model_type": "{name}"}}"#))?;
+            let result = read_architecture_from_config(&config);
+            assert!(result.is_err());
+            let Err(error) = result else {
+                return Ok(());
+            };
+            let message = error.to_string();
+            assert!(message.contains("supported dense architectures"));
+            assert!(
+                message.contains("mixture-of-experts") || message.contains("multi-head-latent-attention")
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_model_type_lists_the_supported_families() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let config = directory.path().join(CONFIG_NAME);
+        std::fs::write(&config, br#"{"model_type": "phi3"}"#)?;
         let result = read_architecture_from_config(&config);
         assert!(result.is_err());
+        let Err(error) = result else {
+            return Ok(());
+        };
+        assert!(error
+            .to_string()
+            .contains(ModelArchitecture::supported_names()));
         Ok(())
     }
 
