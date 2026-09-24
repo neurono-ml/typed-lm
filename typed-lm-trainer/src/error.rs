@@ -14,6 +14,17 @@ pub enum TrainerError {
     /// Invalid configuration (bad flag combination, out-of-range value).
     #[error("invalid configuration: {0}")]
     Configuration(String),
+    /// A configuration file could not be read, parsed or validated.
+    #[error("configuration file error in '{path}': {message}")]
+    ConfigurationFile {
+        /// Path of the offending configuration file.
+        path: String,
+        /// Human-readable reason, ideally naming the key.
+        message: String,
+    },
+    /// Failure while initializing from-scratch weights.
+    #[error("initialization error: {0}")]
+    Initialization(String),
     /// Failure while discovering, parsing or collating a dataset.
     #[error("dataset error: {0}")]
     Dataset(String),
@@ -32,6 +43,21 @@ pub enum TrainerError {
     /// Any other failure, wrapped for context.
     #[error(transparent)]
     Other(#[from] anyhow::Error),
+}
+
+impl TrainerError {
+    /// Build a configuration-file error from a path and a human-readable reason.
+    pub fn configuration_file(path: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::ConfigurationFile {
+            path: path.into(),
+            message: message.into(),
+        }
+    }
+
+    /// Build an initialization error from a human-readable reason.
+    pub fn initialization(message: impl Into<String>) -> Self {
+        Self::Initialization(message.into())
+    }
 }
 
 #[cfg(test)]
@@ -68,5 +94,36 @@ mod tests {
     fn anyhow_errors_convert_through_other() {
         let error: TrainerError = anyhow::anyhow!("wrapped").into();
         assert!(error.to_string().contains("wrapped"));
+    }
+
+    #[test]
+    fn configuration_file_error_formats_path_and_message() -> anyhow::Result<()> {
+        let error = TrainerError::ConfigurationFile {
+            path: "config/train.toml".to_string(),
+            message: "missing key: optimizer.learning_rate".to_string(),
+        };
+        let rendered = error.to_string();
+        assert!(rendered.contains("config/train.toml"));
+        assert!(rendered.contains("missing key: optimizer.learning_rate"));
+        Ok(())
+    }
+
+    #[test]
+    fn configuration_file_constructor_builds_the_variant() -> anyhow::Result<()> {
+        let error = TrainerError::configuration_file("config/train.toml", "unknown key: batch");
+        let rendered = error.to_string();
+        assert!(matches!(error, TrainerError::ConfigurationFile { .. }));
+        assert!(rendered.contains("config/train.toml"));
+        assert!(rendered.contains("unknown key: batch"));
+        Ok(())
+    }
+
+    #[test]
+    fn initialization_constructor_carries_the_prefix() -> anyhow::Result<()> {
+        let error = TrainerError::initialization("cannot allocate weight matrix");
+        assert!(matches!(error, TrainerError::Initialization(_)));
+        assert!(error.to_string().starts_with("initialization error"));
+        assert!(error.to_string().contains("cannot allocate weight matrix"));
+        Ok(())
     }
 }
