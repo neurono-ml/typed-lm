@@ -112,15 +112,22 @@ async fn run_train(arguments: TrainArguments) -> Result<(), TrainerError> {
     // Attach LoRA adapters over the frozen base.
     let mut variable_map = VarMap::new();
     let lora = LoRAConfiguration::new(arguments.lora_rank, arguments.lora_alpha);
+    // The Qwen2 loader is the biased-projection variant of the dense forward;
+    // every non-Llama dense family shares it until the unified dispatch lands.
     let model = match configuration.architecture {
-        ModelArchitecture::Qwen2 => trainable_qwen2::load(
+        ModelArchitecture::Llama => TrainableLlama::load(
             frozen_base.tensors(),
             &configuration,
             lora,
             &mut variable_map,
             &device,
         )?,
-        ModelArchitecture::Llama => TrainableLlama::load(
+        ModelArchitecture::Qwen2
+        | ModelArchitecture::Qwen3
+        | ModelArchitecture::Mistral
+        | ModelArchitecture::Gemma
+        | ModelArchitecture::Gemma2
+        | ModelArchitecture::Gemma3 => trainable_qwen2::load(
             frozen_base.tensors(),
             &configuration,
             lora,

@@ -406,6 +406,16 @@ impl ParallelQuantizedQwen2 {
             rope_theta,
             tie_word_embeddings: false,
             rope_scaling: None,
+            attention_bias: true,
+            explicit_head_dimension: None,
+            sliding_window: None,
+            max_window_layers: 0,
+            logit_softcapping: None,
+            attention_logit_softcapping: None,
+            query_pre_attention_scalar: None,
+            rms_norm_unit_offset: false,
+            embedding_scale: None,
+            rope_local_base_frequency: None,
         })
     }
 
