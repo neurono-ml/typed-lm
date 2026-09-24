@@ -21,10 +21,60 @@ use candle_core::{DType, Device, IndexOp, Result, Tensor, D};
 use candle_nn::attention::{flash_attn as cpu_flash_attention, AttnMask};
 use candle_nn::{embedding, rotary_emb, Embedding, Module, VarBuilder};
 use candle_transformers::models::llama::{Llama3RopeConfig, Llama3RopeType};
-use candle_transformers::models::with_tracing::{linear_b, linear_no_bias, Linear, RmsNorm};
+use candle_transformers::models::with_tracing::{linear_b, linear_no_bias, Linear};
 use candle_transformers::utils::{build_causal_mask, repeat_kv};
 
 use typed_lm_common::model_config::ParallelModelConfig;
+
+/// RMSNorm with the optional Gemma-style `(1 + weight)` unit offset.
+///
+/// The upstream `with_tracing::RmsNorm` does not expose its weight, so the
+/// arithmetic is replicated here following
+/// `candle_transformers::models::gemma::RmsNorm`: normalization runs in `F32`
+/// for half-precision inputs and is cast back before the affine multiply. When
+/// `unit_offset` is set the affine factor is `(1 + weight)` instead of `weight`
+/// (Gemma/Gemma2/Gemma3).
+#[derive(Debug, Clone)]
+struct ConfiguredRmsNorm {
+    weight: Tensor,
+    eps: f64,
+    unit_offset: bool,
+    span: tracing::Span,
+}
+
+impl ConfiguredRmsNorm {
+    fn new(size: usize, eps: f64, unit_offset: bool, variable_builder: VarBuilder) -> Result<Self> {
+        let span = tracing::span!(tracing::Level::TRACE, "rms-norm");
+        let weight = variable_builder.get(size, "weight")?;
+        Ok(Self {
+            weight,
+            eps,
+            unit_offset,
+            span,
+        })
+    }
+
+    fn forward(&self, hidden: &Tensor) -> Result<Tensor> {
+        let _enter = self.span.enter();
+        let hidden_dtype = hidden.dtype();
+        let internal_dtype = match hidden_dtype {
+            DType::F16 | DType::BF16 => DType::F32,
+            other => other,
+        };
+        let hidden_size = hidden.dim(D::Minus1)?;
+        let hidden = hidden.to_dtype(internal_dtype)?;
+        let norm = (hidden.sqr()?.sum_keepdim(D::Minus1)? / hidden_size as f64)?;
+        let normalized = hidden.broadcast_div(&(norm + self.eps)?.sqrt()?)?;
+        let factor = if self.unit_offset {
+            (&self.weight + 1.0)?
+        } else {
+            self.weight.clone()
+        };
+        normalized
+            .to_dtype(hidden_dtype)?
+            .broadcast_mul(&factor.to_dtype(hidden_dtype)?)
+    }
+}
 
 /// Key/value cache with public batch broadcasting.
 #[derive(Debug, Clone)]
@@ -35,6 +85,7 @@ pub struct ParallelCache {
     cos: Tensor,
     sin: Tensor,
     device: Device,
+    sliding_window: Option<usize>,
 }
 
 fn default_inverse_frequencies(config: &ParallelModelConfig) -> Vec<f32> {
@@ -100,6 +151,7 @@ impl ParallelCache {
             cos,
             sin,
             device: device.clone(),
+            sliding_window: config.sliding_window,
         })
     }
 
@@ -108,7 +160,15 @@ impl ParallelCache {
         if let Some(mask) = self.masks.get(&(sequence_length, key_value_length)) {
             return Ok(mask.clone());
         }
-        let mask = build_causal_mask(sequence_length, index_position, &self.device)?;
+        let mask = match self.sliding_window {
+            Some(window) => build_causal_window_mask(
+                sequence_length,
+                index_position,
+                window,
+                &self.device,
+            )?,
+            None => build_causal_mask(sequence_length, index_position, &self.device)?,
+        };
         self.masks
             .insert((sequence_length, key_value_length), mask.clone());
         Ok(mask)
@@ -150,6 +210,8 @@ struct ParallelAttention {
     num_key_value_heads: usize,
     head_dimension: usize,
     max_position_embeddings: usize,
+    attention_scale: f64,
+    attention_logit_softcapping: Option<f64>,
     rotation_span: tracing::Span,
     span: tracing::Span,
 }
@@ -158,6 +220,34 @@ fn masked_fill(on_false: &Tensor, mask: &Tensor, on_true: f32) -> Result<Tensor>
     let shape = mask.shape();
     let on_true = Tensor::new(on_true, on_false.device())?.broadcast_as(shape.dims())?;
     mask.where_cond(&on_true, on_false)
+}
+
+/// Builds a combined causal and sliding-window additive mask.
+///
+/// Rows are query positions and columns are key positions. A key `j` is masked
+/// for query `i` when it is in the future (`j > i`) or more than `window`
+/// positions behind it (`j + window < i`), matching the upstream Gemma2/Mistral
+/// sliding-window mask. `index_position` shifts the query rows so the mask can
+/// be reused during a decode step. The result is `(sequence_length,
+/// key_value_length)` with `0.0` for attended positions and `NEG_INFINITY` for
+/// masked ones.
+fn build_causal_window_mask(
+    sequence_length: usize,
+    index_position: usize,
+    window: usize,
+    device: &Device,
+) -> Result<Tensor> {
+    let key_value_length = index_position + sequence_length;
+    let mut values = vec![0f32; sequence_length * key_value_length];
+    for query in 0..sequence_length {
+        let absolute_query = query + index_position;
+        for key in 0..key_value_length {
+            if key > absolute_query || key + window < absolute_query {
+                values[query * key_value_length + key] = f32::NEG_INFINITY;
+            }
+        }
+    }
+    Tensor::from_vec(values, (sequence_length, key_value_length), device)
 }
 
 /// Computes attention context with the fused CPU kernel, supporting GQA.
@@ -176,9 +266,8 @@ fn cpu_flash_attention_context(
     key: &Tensor,
     value: &Tensor,
     index_position: usize,
+    softmax_scale: f32,
 ) -> Result<Tensor> {
-    let head_dimension = query.dims()[3];
-    let softmax_scale = 1.0 / (head_dimension as f32).sqrt();
     let attention_mask = AttnMask::causal_with_offset(index_position);
     match query.dtype() {
         DType::F32 => {
@@ -310,9 +399,15 @@ impl ParallelAttention {
 
         // On the CPU the fused flash-style kernel is both faster and more
         // memory-efficient than the matmul/softmax/matmul path, and it keeps
-        // grouped query attention grouped. The result layout matches the
-        // standard path: (batch, heads, sequence, head_dim).
-        if query.device().is_cpu() {
+        // grouped query attention grouped. It cannot, however, express an
+        // attention-logit softcap nor a sliding-window mask; both of those
+        // families therefore fall back to the generic masked path below. The
+        // result layout matches the standard path: (batch, heads, sequence,
+        // head_dim).
+        let fused_cpu_path_is_possible = query.device().is_cpu()
+            && self.attention_logit_softcapping.is_none()
+            && cache.sliding_window.is_none();
+        if fused_cpu_path_is_possible {
             let query_in_sequence_layout = query.transpose(1, 2)?.contiguous()?;
             let key_in_sequence_layout = key.transpose(1, 2)?.contiguous()?;
             let value_in_sequence_layout = value.transpose(1, 2)?.contiguous()?;
@@ -321,6 +416,7 @@ impl ParallelAttention {
                 &key_in_sequence_layout,
                 &value_in_sequence_layout,
                 index_position,
+                self.attention_scale as f32,
             )?;
             let output =
                 context
@@ -333,7 +429,10 @@ impl ParallelAttention {
         let query = query.to_dtype(DType::F32)?;
         let key = key.to_dtype(DType::F32)?;
         let value = value.to_dtype(DType::F32)?;
-        let attention = (query.matmul(&key.t()?)? / (self.head_dimension as f64).sqrt())?;
+        let mut attention = (query.matmul(&key.t()?)? * self.attention_scale)?;
+        if let Some(softcap) = self.attention_logit_softcapping {
+            attention = ((attention / softcap)?.tanh()? * softcap)?;
+        }
         let attention = if sequence_length == 1 {
             attention
         } else {
@@ -362,6 +461,10 @@ impl ParallelAttention {
         let query_size = head_dimension * config.num_attention_heads;
         let key_value_size = head_dimension * config.num_key_value_heads;
         let with_bias = config.has_query_key_value_bias();
+        let attention_scale = match config.query_pre_attention_scalar {
+            Some(scalar) => (scalar as f64).powf(-0.5),
+            None => 1.0 / (head_dimension as f64).sqrt(),
+        };
         Ok(Self {
             query_projection: projection(
                 input_size,
@@ -391,6 +494,8 @@ impl ParallelAttention {
             num_key_value_heads: config.num_key_value_heads,
             head_dimension,
             max_position_embeddings: config.max_position_embeddings,
+            attention_scale,
+            attention_logit_softcapping: config.attention_logit_softcapping,
             rotation_span,
             span,
         })
@@ -456,9 +561,9 @@ impl ParallelMlp {
 
 #[derive(Debug, Clone)]
 struct ParallelBlock {
-    input_norm: RmsNorm,
+    input_norm: ConfiguredRmsNorm,
     attention: ParallelAttention,
-    post_attention_norm: RmsNorm,
+    post_attention_norm: ConfiguredRmsNorm,
     mlp: ParallelMlp,
     span: tracing::Span,
 }
@@ -486,14 +591,16 @@ impl ParallelBlock {
 
     fn load(variable_builder: VarBuilder, config: &ParallelModelConfig) -> Result<Self> {
         let span = tracing::span!(tracing::Level::TRACE, "block");
-        let input_norm = RmsNorm::new(
+        let input_norm = ConfiguredRmsNorm::new(
             config.hidden_size,
             config.rms_norm_eps,
+            config.rms_norm_unit_offset,
             variable_builder.pp("input_layernorm"),
         )?;
-        let post_attention_norm = RmsNorm::new(
+        let post_attention_norm = ConfiguredRmsNorm::new(
             config.hidden_size,
             config.rms_norm_eps,
+            config.rms_norm_unit_offset,
             variable_builder.pp("post_attention_layernorm"),
         )?;
         Ok(Self {
@@ -506,13 +613,25 @@ impl ParallelBlock {
     }
 }
 
+/// Applies the Gemma2/Gemma3 `tanh`-based final logit softcap when configured.
+///
+/// `tanh(logits / cap) * cap` bounds the logits to `(-cap, cap)`.
+fn apply_logit_softcapping(logits: &Tensor, softcap: Option<f64>) -> Result<Tensor> {
+    match softcap {
+        None => Ok(logits.clone()),
+        Some(cap) => (logits / cap)?.tanh()? * cap,
+    }
+}
+
 /// Llama model with batch-broadcastable cache and per-row logit collection.
 #[derive(Debug, Clone)]
 pub struct ParallelLlama {
     token_embedding: Embedding,
     blocks: Vec<ParallelBlock>,
-    final_norm: RmsNorm,
+    final_norm: ConfiguredRmsNorm,
     language_model_head: Linear,
+    embedding_scale: Option<f64>,
+    logit_softcapping: Option<f64>,
 }
 
 impl ParallelLlama {
@@ -525,6 +644,9 @@ impl ParallelLlama {
         cache: &mut ParallelCache,
     ) -> Result<Tensor> {
         let mut hidden = self.token_embedding.forward(tokens)?;
+        if let Some(scale) = self.embedding_scale {
+            hidden = (hidden * scale)?;
+        }
         for (block_index, block) in self.blocks.iter().enumerate() {
             hidden = block.forward(&hidden, index_position, block_index, cache)?;
         }
@@ -545,7 +667,8 @@ impl ParallelLlama {
         let stacked = Tensor::stack(&rows, 0)?;
         let normalized = self.final_norm.forward(&stacked)?;
         let logits = self.language_model_head.forward(&normalized)?;
-        logits.to_dtype(DType::F32)
+        let logits = logits.to_dtype(DType::F32)?;
+        apply_logit_softcapping(&logits, self.logit_softcapping)
     }
 
     /// Reference single-row forward returning last-position logits `(1, vocab)`.
@@ -560,7 +683,8 @@ impl ParallelLlama {
         let normalized = self.final_norm.forward(&hidden)?;
         let last = normalized.i((.., sequence_length - 1, ..))?.contiguous()?;
         let logits = self.language_model_head.forward(&last)?;
-        logits.to_dtype(DType::F32)
+        let logits = logits.to_dtype(DType::F32)?;
+        apply_logit_softcapping(&logits, self.logit_softcapping)
     }
 
     pub fn load(variable_builder: VarBuilder, config: &ParallelModelConfig) -> Result<Self> {
@@ -578,9 +702,10 @@ impl ParallelLlama {
                 variable_builder.pp("lm_head"),
             )?
         };
-        let final_norm = RmsNorm::new(
+        let final_norm = ConfiguredRmsNorm::new(
             config.hidden_size,
             config.rms_norm_eps,
+            config.rms_norm_unit_offset,
             variable_builder.pp("model.norm"),
         )?;
         let blocks: Vec<ParallelBlock> = (0..config.num_hidden_layers)
@@ -593,6 +718,8 @@ impl ParallelLlama {
             blocks,
             final_norm,
             language_model_head,
+            embedding_scale: config.embedding_scale,
+            logit_softcapping: config.logit_softcapping,
         })
     }
 }
@@ -701,7 +828,13 @@ mod tests {
                     &mut seed,
                 )?;
 
-                let flash = cpu_flash_attention_context(&query, &key, &value, index_position)?;
+                let flash = cpu_flash_attention_context(
+                    &query,
+                    &key,
+                    &value,
+                    index_position,
+                    1.0 / (head_dimension as f32).sqrt(),
+                )?;
                 let reference = reference_attention(&query, &key, &value, index_position, groups)?;
 
                 let flash_values = flash.flatten_all()?.to_vec1::<f32>()?;
@@ -911,9 +1044,7 @@ mod tests {
         // upstream `Model::forward` applies the final RMSNorm; the vendored
         // `forward_hidden_all` does not, so the norm is applied here.
         {
-            use candle_nn::Module as _;
             use candle_transformers::models::qwen2::Model as Qwen2Base;
-            use candle_transformers::models::with_tracing::RmsNorm;
             let base_builder = VarBuilder::from_tensors(weights.clone(), dtype, &device);
             let mut base = Qwen2Base::new(&reference_config, base_builder)?;
             let probe = Tensor::new(&[3u32, 9, 11, 5], &device)?.unsqueeze(0)?;
@@ -929,7 +1060,7 @@ mod tests {
                 dtype,
                 &device,
             );
-            let final_norm = RmsNorm::new(hidden, 1e-6, norm_builder.pp("norm"))?;
+            let final_norm = ConfiguredRmsNorm::new(hidden, 1e-6, false, norm_builder.pp("norm"))?;
             let vendored_normalized = final_norm.forward(&vendored_hidden)?;
             let reference_values = reference_hidden.i((0, 3, ..))?.to_vec1::<f32>()?;
             let vendored_values = vendored_normalized.i((0, 3, ..))?.to_vec1::<f32>()?;
@@ -963,6 +1094,229 @@ mod tests {
                 );
             }
         }
+        Ok(())
+    }
+
+    fn tensor_builder(
+        tensors: HashMap<String, Tensor>,
+        dtype: DType,
+        device: &Device,
+    ) -> VarBuilder<'static> {
+        VarBuilder::from_tensors(tensors, dtype, device)
+    }
+
+    #[test]
+    fn gemma_unit_offset_rms_norm_scales_by_one_plus_weight() -> anyhow::Result<()> {
+        let device = Device::Cpu;
+        let hidden = 4_usize;
+
+        let mut with_offset = HashMap::new();
+        with_offset.insert(
+            "norm.weight".to_string(),
+            Tensor::zeros(hidden, DType::F32, &device)?,
+        );
+        let offset_norm =
+            ConfiguredRmsNorm::new(hidden, 1e-6, true, tensor_builder(with_offset, DType::F32, &device).pp("norm"))?;
+
+        let mut without_offset = HashMap::new();
+        without_offset.insert(
+            "norm.weight".to_string(),
+            Tensor::zeros(hidden, DType::F32, &device)?,
+        );
+        let plain_norm = ConfiguredRmsNorm::new(
+            hidden,
+            1e-6,
+            false,
+            tensor_builder(without_offset, DType::F32, &device).pp("norm"),
+        )?;
+
+        let input = Tensor::new(&[[1f32, 2.0, 3.0, 4.0]], &device)?;
+        let offset_output = offset_norm.forward(&input)?;
+        let plain_output = plain_norm.forward(&input)?;
+
+        let offset_values = offset_output.flatten_all()?.to_vec1::<f32>()?;
+        let plain_values = plain_output.flatten_all()?.to_vec1::<f32>()?;
+
+        // With a zero weight the unit offset treats it as one, so every element
+        // is exactly the normalized value; the plain path collapses to zero.
+        assert!(plain_values.iter().all(|value| value.abs() < 1e-7));
+        assert!(offset_values.iter().all(|value| value.abs() > 1e-3));
+        Ok(())
+    }
+
+    fn tiny_config(
+        extra: serde_json::Value,
+    ) -> anyhow::Result<ParallelModelConfig> {
+        let value = serde_json::json!({
+            "model_type": "llama",
+            "hidden_size": 8,
+            "intermediate_size": 16,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "vocab_size": 16,
+            "max_position_embeddings": 32,
+            "rms_norm_eps": 1e-6,
+            "rope_theta": 10000.0
+        });
+        let mut config = ParallelModelConfig::from_llama_json(value)?;
+        if let Some(embedding_scale) = extra.get("embedding_scale").and_then(|entry| entry.as_f64())
+        {
+            config.embedding_scale = Some(embedding_scale);
+        }
+        if let Some(scalar) = extra
+            .get("query_pre_attention_scalar")
+            .and_then(|entry| entry.as_u64())
+        {
+            config.query_pre_attention_scalar = Some(scalar as usize);
+        }
+        Ok(config)
+    }
+
+    fn identity_weights(
+        config: &ParallelModelConfig,
+        device: &Device,
+    ) -> anyhow::Result<HashMap<String, Tensor>> {
+        let hidden = config.hidden_size;
+        let head_dimension = config.head_dimension();
+        let query_size = head_dimension * config.num_attention_heads;
+        let key_value_size = head_dimension * config.num_key_value_heads;
+        let mut weights = HashMap::new();
+        let embedding_values: Vec<f32> = (0..config.vocab_size * hidden)
+            .map(|index| (index + 1) as f32)
+            .collect();
+        weights.insert(
+            "model.embed_tokens.weight".to_string(),
+            Tensor::from_vec(
+                embedding_values,
+                (config.vocab_size, hidden),
+                device,
+            )?,
+        );
+        weights.insert(
+            "lm_head.weight".to_string(),
+            Tensor::zeros((config.vocab_size, hidden), DType::F32, device)?,
+        );
+        weights.insert("model.norm.weight".to_string(), Tensor::ones(hidden, DType::F32, device)?);
+        weights.insert("model.layers.0.input_layernorm.weight".to_string(), Tensor::ones(hidden, DType::F32, device)?);
+        weights.insert("model.layers.0.post_attention_layernorm.weight".to_string(), Tensor::ones(hidden, DType::F32, device)?);
+        weights.insert("model.layers.0.self_attn.q_proj.weight".to_string(), Tensor::zeros((query_size, hidden), DType::F32, device)?);
+        weights.insert("model.layers.0.self_attn.k_proj.weight".to_string(), Tensor::zeros((key_value_size, hidden), DType::F32, device)?);
+        weights.insert("model.layers.0.self_attn.v_proj.weight".to_string(), Tensor::zeros((key_value_size, hidden), DType::F32, device)?);
+        weights.insert("model.layers.0.self_attn.o_proj.weight".to_string(), Tensor::zeros((hidden, query_size), DType::F32, device)?);
+        weights.insert("model.layers.0.mlp.gate_proj.weight".to_string(), Tensor::zeros((config.intermediate_size, hidden), DType::F32, device)?);
+        weights.insert("model.layers.0.mlp.up_proj.weight".to_string(), Tensor::zeros((config.intermediate_size, hidden), DType::F32, device)?);
+        weights.insert("model.layers.0.mlp.down_proj.weight".to_string(), Tensor::zeros((hidden, config.intermediate_size), DType::F32, device)?);
+        Ok(weights)
+    }
+
+    #[test]
+    fn embedding_scale_multiplies_the_first_hidden_state() -> anyhow::Result<()> {
+        let device = Device::Cpu;
+        let dtype = DType::F32;
+        let base_config = tiny_config(serde_json::json!({}))?;
+        let scaled_config = tiny_config(serde_json::json!({ "embedding_scale": 2.0 }))?;
+        assert_eq!(scaled_config.embedding_scale, Some(2.0));
+
+        let tokens = Tensor::new(&[0u32, 1, 2, 3], &device)?.unsqueeze(0)?;
+
+        let base_model = ParallelLlama::load(
+            tensor_builder(identity_weights(&base_config, &device)?, dtype, &device),
+            &base_config,
+        )?;
+        let mut base_cache = ParallelCache::new(true, dtype, &base_config, &device)?;
+        let base_hidden = base_model.forward_hidden_all(&tokens, 0, &mut base_cache)?;
+
+        let scaled_model = ParallelLlama::load(
+            tensor_builder(identity_weights(&scaled_config, &device)?, dtype, &device),
+            &scaled_config,
+        )?;
+        let mut scaled_cache = ParallelCache::new(true, dtype, &scaled_config, &device)?;
+        let scaled_hidden = scaled_model.forward_hidden_all(&tokens, 0, &mut scaled_cache)?;
+
+        // With zero attention/mlp weights the residual stream is the (scaled)
+        // embedding itself, so the two outputs must differ by exactly the scale.
+        let base_values = base_hidden.flatten_all()?.to_vec1::<f32>()?;
+        let scaled_values = scaled_hidden.flatten_all()?.to_vec1::<f32>()?;
+        assert_eq!(base_values.len(), scaled_values.len());
+        assert!(base_values.iter().any(|value| value.abs() > 1e-3));
+        for (base_value, scaled_value) in base_values.iter().zip(scaled_values.iter()) {
+            assert!(
+                (scaled_value - 2.0 * base_value).abs() < 1e-5,
+                "expected {base_value} * 2 but got {scaled_value}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sliding_window_mask_masks_positions_beyond_the_window() -> anyhow::Result<()> {
+        let device = Device::Cpu;
+        // One query row at absolute position 9 with a window of 3: keys within
+        // [6, 9] are visible, key 5 is too far in the past.
+        let mask = build_causal_window_mask(1, 9, 3, &device)?;
+        let values = mask.flatten_all()?.to_vec1::<f32>()?;
+        assert_eq!(values.len(), 10);
+        for (key, value) in values.iter().enumerate() {
+            if key >= 6 {
+                assert_eq!(*value, 0.0, "key {key} should be visible");
+            } else {
+                assert_eq!(*value, f32::NEG_INFINITY, "key {key} should be masked");
+            }
+        }
+
+        // A multi-row window mask keeps recent keys visible and masks the past.
+        let mask = build_causal_window_mask(4, 0, 2, &device)?;
+        let values = mask.to_vec2::<f32>()?;
+        assert_eq!(values.len(), 4);
+        assert_eq!(values[3][3], 0.0);
+        assert_eq!(values[3][2], 0.0);
+        assert_eq!(values[3][1], 0.0);
+        assert_eq!(values[3][0], f32::NEG_INFINITY);
+        assert_eq!(values[0][1], f32::NEG_INFINITY);
+        Ok(())
+    }
+
+    #[test]
+    fn logit_softcapping_bounds_extreme_logits() -> anyhow::Result<()> {
+        let device = Device::Cpu;
+        let logits = Tensor::new(&[[-1000f32, -10.0, 0.0, 10.0, 1000.0]], &device)?;
+        let cap = 30.0_f64;
+        let capped = apply_logit_softcapping(&logits, Some(cap))?;
+        let values = capped.flatten_all()?.to_vec1::<f32>()?;
+        for value in &values {
+            assert!(
+                value.abs() <= cap as f32 + 1e-4,
+                "value {value} exceeds the cap {cap}"
+            );
+        }
+        assert!(values[2].abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn attention_scale_uses_query_pre_attention_scalar() -> anyhow::Result<()> {
+        let device = Device::Cpu;
+        let dtype = DType::F32;
+        let scalar = 64_usize;
+        let config = tiny_config(serde_json::json!({ "query_pre_attention_scalar": scalar }))?;
+        assert_eq!(config.query_pre_attention_scalar, Some(scalar));
+
+        let weights = identity_weights(&config, &device)?;
+        let attention = ParallelAttention::load(
+            tensor_builder(weights, dtype, &device).pp("model.layers.0.self_attn"),
+            &config,
+        )?;
+        let expected = (scalar as f64).powf(-0.5);
+        assert!(
+            (attention.attention_scale - expected).abs() < 1e-12,
+            "expected {expected} but got {}",
+            attention.attention_scale
+        );
+        assert!(
+            (attention.attention_scale - 1.0 / (config.head_dimension() as f64).sqrt()).abs()
+                > 1e-9
+        );
         Ok(())
     }
 }
