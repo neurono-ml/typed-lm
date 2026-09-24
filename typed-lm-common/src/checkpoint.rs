@@ -130,9 +130,34 @@ pub enum WeightKind {
     Dense,
     /// GGML-quantized weights requiring the `QMatMul` path.
     Quantized,
-    /// FP8 (`F8_E4M3`) or `compressed-tensors` weights that candle 0.11 cannot
-    /// execute (it has no FP8 matmul kernel).
+    /// FP8 (`F8_E4M3`/`F8_E5M2`) weights, loadable through dequantization.
+    Float8,
+    /// FP4 (MXFP4 / packed E2M1) weights, loadable through dequantization.
+    Float4,
+    /// FP8/compressed-tensors weights that candle 0.11 cannot execute directly.
+    ///
+    /// Retained for checkpoints whose exact scheme this crate does not model;
+    /// the serving/training paths migrate to [`WeightKind::Float8`] and
+    /// [`WeightKind::Float4`] as those schemes are supported.
     UnsupportedFloat8,
+}
+
+impl WeightKind {
+    /// Human-readable name used in diagnostics.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Dense => "dense",
+            Self::Quantized => "quantized",
+            Self::Float8 => "fp8",
+            Self::Float4 => "fp4",
+            Self::UnsupportedFloat8 => "fp8-unsupported",
+        }
+    }
+
+    /// Whether the kind is a low-precision float that must be dequantized.
+    pub fn is_low_precision_float(self) -> bool {
+        matches!(self, Self::Float8 | Self::Float4)
+    }
 }
 
 /// Everything needed to load a model, resolved before touching the weights.
@@ -356,20 +381,37 @@ pub fn shard_files_from_index(index_json: &str) -> Result<Vec<String>, Detection
 
 /// Infers the weight kind from a safetensors dtype map (tensor name -> dtype).
 ///
-/// Only full-precision dtypes are loadable by candle 0.11; FP8/compressed
-/// checkpoints are detected so the caller can produce an actionable error.
+/// Full-precision dtypes are dense; FP8 dtypes are [`WeightKind::Float8`] and
+/// packed FP4/MX dtypes are [`WeightKind::Float4`]. Both are loadable through
+/// dequantization. An FP4 tensor takes precedence over FP8 because an MXFP4
+/// checkpoint stores a shared exponent (F8E8M0) alongside the packed E2M1
+/// nibbles, so it is detected as FP4 rather than merely FP8.
 pub fn weight_kind_from_safetensors_dtypes(tensor_dtypes: &HashMap<String, String>) -> WeightKind {
     let mut has_float8 = false;
+    let mut has_float4 = false;
     let mut has_dense = false;
     for dtype in tensor_dtypes.values() {
-        if dtype.starts_with("F8") || dtype.contains("FP8") {
+        let normalized = dtype.to_ascii_uppercase();
+        if normalized.starts_with("F4")
+            || normalized.starts_with("MXFP4")
+            || normalized.contains("E2M1")
+        {
+            has_float4 = true;
+        } else if normalized.starts_with("F8")
+            || normalized.contains("FP8")
+            || normalized.contains("E4M3")
+            || normalized.contains("E5M2")
+            || normalized.contains("F8E8M0")
+        {
             has_float8 = true;
-        } else if matches!(dtype.as_str(), "F32" | "F16" | "BF16" | "F64") {
+        } else if matches!(normalized.as_str(), "F32" | "F16" | "BF16" | "F64") {
             has_dense = true;
         }
     }
-    if has_float8 {
-        WeightKind::UnsupportedFloat8
+    if has_float4 {
+        WeightKind::Float4
+    } else if has_float8 {
+        WeightKind::Float8
     } else if has_dense {
         WeightKind::Dense
     } else {
@@ -552,13 +594,55 @@ mod tests {
     }
 
     #[test]
-    fn float8_dtypes_are_flagged_unsupported() {
+    fn float8_dtypes_are_flagged_loadable() {
         let mut dtypes = HashMap::new();
         dtypes.insert("lm_head.weight".to_string(), "BF16".to_string());
         dtypes.insert("layer.weight".to_string(), "F8_E4M3".to_string());
         assert_eq!(
             weight_kind_from_safetensors_dtypes(&dtypes),
-            WeightKind::UnsupportedFloat8
+            WeightKind::Float8
+        );
+        assert!(WeightKind::Float8.is_low_precision_float());
+    }
+
+    #[test]
+    fn float8_e5m2_and_f8e8m0_dtypes_are_flagged_loadable() {
+        let mut e5m2 = HashMap::new();
+        e5m2.insert("layer.weight".to_string(), "F8_E5M2".to_string());
+        assert_eq!(
+            weight_kind_from_safetensors_dtypes(&e5m2),
+            WeightKind::Float8
+        );
+
+        let mut exponent = HashMap::new();
+        exponent.insert("layer.scale".to_string(), "F8_E8M0".to_string());
+        assert_eq!(
+            weight_kind_from_safetensors_dtypes(&exponent),
+            WeightKind::Float8
+        );
+    }
+
+    #[test]
+    fn packed_float4_dtypes_take_precedence_over_float8() {
+        let mut dtypes = HashMap::new();
+        // MXFP4 checkpoints carry both E2M1 nibbles and an F8E8M0 shared
+        // exponent; the kind must be FP4, not FP8.
+        dtypes.insert("layer.weight".to_string(), "MXFP4".to_string());
+        dtypes.insert("layer.scale".to_string(), "F8_E8M0".to_string());
+        assert_eq!(
+            weight_kind_from_safetensors_dtypes(&dtypes),
+            WeightKind::Float4
+        );
+        assert!(WeightKind::Float4.is_low_precision_float());
+    }
+
+    #[test]
+    fn bare_f4_dtype_is_flagged_float4() {
+        let mut dtypes = HashMap::new();
+        dtypes.insert("layer.weight".to_string(), "F4".to_string());
+        assert_eq!(
+            weight_kind_from_safetensors_dtypes(&dtypes),
+            WeightKind::Float4
         );
     }
 
@@ -571,6 +655,16 @@ mod tests {
             weight_kind_from_safetensors_dtypes(&dtypes),
             WeightKind::Dense
         );
+        assert!(!WeightKind::Dense.is_low_precision_float());
+    }
+
+    #[test]
+    fn weight_kind_names_are_stable() {
+        assert_eq!(WeightKind::Dense.name(), "dense");
+        assert_eq!(WeightKind::Quantized.name(), "quantized");
+        assert_eq!(WeightKind::Float8.name(), "fp8");
+        assert_eq!(WeightKind::Float4.name(), "fp4");
+        assert_eq!(WeightKind::UnsupportedFloat8.name(), "fp8-unsupported");
     }
 
     #[test]
