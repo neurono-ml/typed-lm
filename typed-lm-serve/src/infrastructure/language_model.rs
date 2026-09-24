@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
@@ -6,10 +7,11 @@ use tokenizers::Tokenizer;
 
 use crate::infrastructure::parallel_llama::{ParallelCache, ParallelLlama};
 use crate::infrastructure::parallel_quantized_qwen2::{ParallelQuantizedQwen2, QuantizedCache};
-use typed_lm_common::checkpoint::ModelArchitecture;
+use typed_lm_common::checkpoint::{ModelArchitecture, WeightKind};
 use typed_lm_common::checkpoint_resolver::LoadableCheckpoint;
 use typed_lm_common::model_config::ParallelModelConfig;
 use typed_lm_common::prompt_template::PromptTemplate;
+use typed_lm_common::quantization::{dequantize_checkpoint_tensors, QuantizationScheme};
 
 /// Architecture-agnostic key/value cache handle.
 ///
@@ -123,8 +125,15 @@ impl LanguageModel {
         match &checkpoint.resolved.layout {
             typed_lm_common::checkpoint::WeightLayout::Safetensors { files } => {
                 let config = read_config(&checkpoint.resolved.config_file, architecture)?;
-                let variable_builder = unsafe {
-                    VarBuilder::from_mmaped_safetensors(files.as_slice(), dtype, device)?
+                let variable_builder = if checkpoint.weight_kind.is_low_precision_float() {
+                    Self::low_precision_variable_builder(
+                        files,
+                        scheme_for_weight_kind(checkpoint.weight_kind),
+                        device,
+                        dtype,
+                    )?
+                } else {
+                    unsafe { VarBuilder::from_mmaped_safetensors(files.as_slice(), dtype, device)? }
                 };
                 let model = ParallelLlama::load(variable_builder, &config)?;
                 Ok(Self::assemble(
@@ -178,6 +187,31 @@ impl LanguageModel {
                 ))
             }
         }
+    }
+
+    /// Builds a variable builder from a low-precision (FP8/FP4) safetensors
+    /// checkpoint by dequantizing every weight to dense F32 first.
+    ///
+    /// Candle 0.11 can store `F8_E4M3`/`F4` tensors but has no matmul kernel for
+    /// them, so the forward pass cannot consume them directly. Each safetensors
+    /// file is read into memory, the low-precision weights are dequantized with
+    /// the shared [`dequantize_checkpoint_tensors`] routine (which consumes the
+    /// paired scale tensors), and the resulting dense map is handed to
+    /// [`VarBuilder::from_tensors`].
+    fn low_precision_variable_builder(
+        files: &[PathBuf],
+        scheme: QuantizationScheme,
+        device: &Device,
+        dtype: DType,
+    ) -> anyhow::Result<VarBuilder<'static>> {
+        let mut tensors: HashMap<String, Tensor> = HashMap::new();
+        for file in files {
+            for (name, tensor) in candle_core::safetensors::load(file, device)? {
+                tensors.insert(name, tensor);
+            }
+        }
+        let dense_weights = dequantize_checkpoint_tensors(tensors, scheme)?;
+        Ok(VarBuilder::from_tensors(dense_weights, dtype, device))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -405,6 +439,20 @@ fn read_config(
     let value: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|error| anyhow::anyhow!("failed to parse '{}': {error}", config_file.display()))?;
     ParallelModelConfig::from_json_for_architecture(value, architecture)
+}
+
+/// Maps a resolved weight kind to the dequantization scheme used on load.
+///
+/// Dense and GGML-quantized checkpoints never reach the low-precision loader;
+/// the mapping is total so callers stay exhaustive.
+fn scheme_for_weight_kind(weight_kind: WeightKind) -> QuantizationScheme {
+    match weight_kind {
+        WeightKind::Float8 => QuantizationScheme::Fp8,
+        WeightKind::Float4 => QuantizationScheme::Fp4,
+        WeightKind::Dense | WeightKind::Quantized | WeightKind::UnsupportedFloat8 => {
+            QuantizationScheme::None
+        }
+    }
 }
 
 /// Pads variable-length suffix token sequences to a common length for batching.

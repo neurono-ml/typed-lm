@@ -129,25 +129,23 @@ fn resolve_checkpoint(serve_arguments: &ServeArguments) -> anyhow::Result<Loadab
     }
 }
 
-/// Rejects weight kinds candle 0.11 cannot execute (FP8/compressed-tensors).
+/// Confirms the checkpoint can be executed by the serving loader.
+///
+/// FP8 and FP4 checkpoints are accepted: the loader dequantizes them to the
+/// compute dtype before the forward pass, so candle never needs a low-precision
+/// matmul kernel. Only schemes this crate does not model remain rejected.
 fn ensure_supported_weight_kind(checkpoint: &LoadableCheckpoint) -> anyhow::Result<()> {
     match checkpoint.weight_kind {
         WeightKind::UnsupportedFloat8 => Err(anyhow::anyhow!(
-            "checkpoint '{}' uses FP8/compressed-tensors weights unsupported by candle 0.11 \
-             (it has no FP8 matmul kernel). Use a full-precision (BF16/F16/F32) or GGML-quantized \
-             checkpoint instead, for example Qwen/Qwen2.5-1.5B-Instruct or its GGUF variant.",
+            "checkpoint '{}' uses an FP8/compressed-tensors scheme this build does not model. \
+             Supported low-precision schemes are FP8 (E4M3/E5M2) and MXFP4, both dequantized on \
+             load. Alternatively use a full-precision (BF16/F16/F32) or GGML-quantized checkpoint, \
+             for example Qwen/Qwen2.5-1.5B-Instruct or its GGUF variant.",
             checkpoint.resolved.reference.describe()
         )),
-        WeightKind::Dense | WeightKind::Quantized => Ok(()),
-    }
-}
-
-/// Human-readable name for the weight kind (logs).
-fn weight_kind_name(kind: WeightKind) -> &'static str {
-    match kind {
-        WeightKind::Dense => "dense",
-        WeightKind::Quantized => "quantized",
-        WeightKind::UnsupportedFloat8 => "fp8",
+        WeightKind::Dense | WeightKind::Quantized | WeightKind::Float8 | WeightKind::Float4 => {
+            Ok(())
+        }
     }
 }
 
@@ -166,7 +164,7 @@ async fn run_serve_command(serve_arguments: ServeArguments) -> anyhow::Result<()
         "checkpoint ready ({} layout, {} architecture, {} weights); loading weights",
         checkpoint.resolved.layout.name(),
         checkpoint.architecture.name(),
-        weight_kind_name(checkpoint.weight_kind),
+        checkpoint.weight_kind.name(),
     );
     let language_model = LanguageModel::load(&checkpoint, &execution_device, model_dtype)?;
     tracing::info!("language model loaded; resolving memory context");
@@ -332,5 +330,49 @@ mod tests {
         assert!(loaded_context.contains("GreenLeaf"));
         assert_eq!(context_name, "file:resources/memory.md");
         Ok(())
+    }
+
+    fn checkpoint_with_weight_kind(weight_kind: WeightKind) -> LoadableCheckpoint {
+        LoadableCheckpoint {
+            resolved: typed_lm_common::checkpoint::ResolvedCheckpoint {
+                reference: ModelReference::Local {
+                    path: std::path::PathBuf::from("/tmp/typed-lm-test-model"),
+                },
+                config_file: std::path::PathBuf::from("/tmp/typed-lm-test-model/config.json"),
+                tokenizer_file: std::path::PathBuf::from("/tmp/typed-lm-test-model/tokenizer.json"),
+                layout: typed_lm_common::checkpoint::WeightLayout::Safetensors {
+                    files: Vec::new(),
+                },
+            },
+            architecture: typed_lm_common::checkpoint::ModelArchitecture::Qwen2,
+            weight_kind,
+        }
+    }
+
+    #[test]
+    fn dense_and_quantized_weight_kinds_are_accepted() {
+        for weight_kind in [
+            WeightKind::Dense,
+            WeightKind::Quantized,
+            WeightKind::Float8,
+            WeightKind::Float4,
+        ] {
+            let checkpoint = checkpoint_with_weight_kind(weight_kind);
+            assert!(
+                ensure_supported_weight_kind(&checkpoint).is_ok(),
+                "{weight_kind:?} must be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_float8_weight_kind_is_rejected_with_a_remedy() {
+        let checkpoint = checkpoint_with_weight_kind(WeightKind::UnsupportedFloat8);
+        let result = ensure_supported_weight_kind(&checkpoint);
+        assert!(result.is_err());
+        let Err(error) = result else {
+            return;
+        };
+        assert!(error.to_string().contains("GGUF"));
     }
 }

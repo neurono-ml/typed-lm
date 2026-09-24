@@ -16,6 +16,7 @@
 
 use candle_core::{DType, Device, Result as CandleResult, Tensor};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Number of weights sharing one MXFP4 exponent.
 pub const MXFP4_BLOCK_SIZE: usize = 32;
@@ -289,6 +290,69 @@ pub fn dense_from_slice(values: &[f32], device: &Device) -> CandleResult<Tensor>
     Tensor::from_slice(values, (values.len(),), device)
 }
 
+/// Name of the scale tensor paired with a quantized weight tensor.
+///
+/// Follows the `compressed-tensors` naming used by FP8/MXFP4 checkpoints:
+/// `model.layers.0.mlp.down_proj.weight` pairs with
+/// `model.layers.0.mlp.down_proj.weight_scale`.
+pub fn scale_tensor_name(weight_name: &str) -> String {
+    format!("{weight_name}_scale")
+}
+
+/// Dequantizes every weight of a checkpoint tensor map to dense F32.
+///
+/// The scheme is homogeneous across the checkpoint (that is what the trainer
+/// emits), so a single [`QuantizationScheme`] drives the whole map.
+///
+/// - `Fp8` — each weight is scaled by its paired `*_scale` tensor (per output
+///   channel). A missing scale leaves the raw E4M3 value widened to F32.
+/// - `Fp4` — each weight holds packed E2M1 nibbles (two per byte) and its
+///   paired `*_scale` tensor holds the E8M0 block exponents; a missing scale is
+///   an error, because the block scale cannot be reconstructed.
+/// - `None` — the map is returned unchanged.
+///
+/// Paired scale tensors are consumed by the dequantization, so they never leak
+/// into the model weights handed to the variable builder.
+pub fn dequantize_checkpoint_tensors(
+    mut tensors: HashMap<String, Tensor>,
+    scheme: QuantizationScheme,
+) -> anyhow::Result<HashMap<String, Tensor>> {
+    if scheme == QuantizationScheme::None {
+        return Ok(tensors);
+    }
+    let weight_names: Vec<String> = tensors
+        .keys()
+        .filter(|name| !name.ends_with("_scale"))
+        .cloned()
+        .collect();
+    let mut output = HashMap::with_capacity(weight_names.len());
+    for weight_name in weight_names {
+        let Some(weight) = tensors.remove(&weight_name) else {
+            continue;
+        };
+        let scale = tensors.remove(&scale_tensor_name(&weight_name));
+        let dequantized = match scheme {
+            QuantizationScheme::Fp8 => match scale {
+                Some(scale) => dequantize_fp8_per_channel(&weight, &scale)?,
+                None => weight.to_dtype(DType::F32)?,
+            },
+            QuantizationScheme::Fp4 => {
+                let scale = scale.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "FP4 weight '{weight_name}' is missing its '{}' exponent tensor",
+                        scale_tensor_name(&weight_name)
+                    )
+                })?;
+                let element_count = weight.elem_count().saturating_mul(2);
+                dequantize_fp4_mxfp4(&weight, &scale, element_count)?
+            }
+            QuantizationScheme::None => weight,
+        };
+        output.insert(weight_name, dequantized.to_dtype(DType::F32)?);
+    }
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,6 +491,82 @@ mod tests {
         let config = QuantizationConfig::new(QuantizationScheme::None);
         let (quantized, _auxiliary) = quantize(&config, &weights)?;
         assert_eq!(quantized.to_vec1::<f32>()?, vec![1.0, 2.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn scale_tensor_name_appends_the_convention_suffix() {
+        assert_eq!(
+            scale_tensor_name("model.layers.0.mlp.down_proj.weight"),
+            "model.layers.0.mlp.down_proj.weight_scale"
+        );
+    }
+
+    #[test]
+    fn checkpoint_tensor_map_fp8_dequantizes_and_consumes_scales() -> anyhow::Result<()> {
+        let device = Device::Cpu;
+        let name = "model.layers.0.weight".to_string();
+        let weights = Tensor::new(vec![vec![1.0_f32, -2.0, 0.5, 3.0]], &device)?;
+        let (quantized, scales) = quantize_fp8_per_channel(&weights)?;
+        let mut tensors = HashMap::new();
+        tensors.insert(name.clone(), quantized);
+        tensors.insert(scale_tensor_name(&name), scales);
+
+        let dequantized = dequantize_checkpoint_tensors(tensors, QuantizationScheme::Fp8)?;
+        assert_eq!(dequantized.len(), 1, "the scale tensor must be consumed");
+        let restored = dequantized
+            .get(&name)
+            .ok_or_else(|| anyhow::anyhow!("missing weight '{name}'"))?;
+        assert_eq!(restored.dtype(), DType::F32);
+        assert_eq!(restored.dims(), &[1, 4]);
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_tensor_map_fp4_dequantizes_with_packed_nibbles() -> anyhow::Result<()> {
+        let device = Device::Cpu;
+        let name = "model.layers.0.proj.weight".to_string();
+        let values: Vec<f32> = (0..32).map(|index| index as f32 / 8.0).collect();
+        let weights = Tensor::from_vec(values, (32,), &device)?;
+        let (packed, exponents) = quantize_fp4_mxfp4(&weights)?;
+        let mut tensors = HashMap::new();
+        tensors.insert(name.clone(), packed);
+        tensors.insert(scale_tensor_name(&name), exponents);
+
+        let dequantized = dequantize_checkpoint_tensors(tensors, QuantizationScheme::Fp4)?;
+        assert_eq!(dequantized.len(), 1);
+        let restored = dequantized
+            .get(&name)
+            .ok_or_else(|| anyhow::anyhow!("missing weight '{name}'"))?;
+        // 32 nibbles pack into 16 bytes, dequantized back to 32 F32 values.
+        assert_eq!(restored.dims(), &[32]);
+        assert_eq!(restored.dtype(), DType::F32);
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_tensor_map_fp4_without_scales_is_an_error() -> anyhow::Result<()> {
+        let device = Device::Cpu;
+        let name = "model.layers.0.proj.weight".to_string();
+        let weights = Tensor::from_vec(vec![1.0_f32; 32], (32,), &device)?;
+        let (packed, _exponents) = quantize_fp4_mxfp4(&weights)?;
+        let mut tensors = HashMap::new();
+        tensors.insert(name, packed);
+        let result = dequantize_checkpoint_tensors(tensors, QuantizationScheme::Fp4);
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_tensor_map_none_is_returned_unchanged() -> anyhow::Result<()> {
+        let device = Device::Cpu;
+        let mut tensors = HashMap::new();
+        tensors.insert(
+            "embed.weight".to_string(),
+            Tensor::new(vec![1.0_f32, 2.0], &device)?,
+        );
+        let unchanged = dequantize_checkpoint_tensors(tensors.clone(), QuantizationScheme::None)?;
+        assert_eq!(unchanged.len(), tensors.len());
         Ok(())
     }
 }
