@@ -2,14 +2,32 @@
 
 `typed-lm-trainer` is a binary with two subcommands:
 
-- `train` — fine-tunes a **LoRA** or **QLoRA** adapter over a frozen base
-  checkpoint;
+- `train` — trains with one of four methods (`lora`, `qlora`, `full`,
+  `from-scratch`), either an adapter over a frozen base checkpoint or the full
+  set of parameters;
 - `quantize` — applies **post-training quantization (PTQ)** to FP8/FP4 and merges
   an optional adapter first.
 
 Both optimize the **cross-entropy at the decision position** (the last prompt
 token, restricted to the candidate labels) — exactly the position the server
-reads at inference — so the adapter tunes the behavior the API actually uses.
+reads at inference — so the training tunes the behavior the API actually uses.
+
+## Training methods
+
+The `--method` flag selects how the model starts and which parameters it
+trains:
+
+| `--method` | Base origin | Trainable parameters | Output artifacts |
+|---|---|---|---|
+| `lora` (default) | checkpoint, frozen | LoRA `A`/`B` only | `adapter.safetensors` + `adapter_config.json` |
+| `qlora` | checkpoint, quantized (dequantized on load), frozen | LoRA `A`/`B` only | `adapter.safetensors` + `adapter_config.json` |
+| `full` | checkpoint | every parameter | `model.safetensors` + `config.json` + `tokenizer.json` |
+| `from-scratch` | random initialization | every parameter | `model.safetensors` + `config.json` + `tokenizer.json` |
+
+`lora` and `qlora` are the adapter methods: the base is never duplicated, and
+only the adapter tensors are stored. `full` and `from-scratch` train every
+parameter and write a **complete dense checkpoint** that `typed-lm-serve` serves
+directly.
 
 ## Prerequisites
 
@@ -190,7 +208,10 @@ Main flags:
 | `--model-id` | Local base checkpoint (directory) | `Qwen/Qwen2.5-1.5B-Instruct` |
 | `--dataset` | Dataset file or directory | required |
 | `--output-directory` | Adapter destination | `output/train` |
-| `--method` | `lora` or `qlora` | `lora` |
+| `--method` | `lora`, `qlora`, `full` or `from-scratch` | `lora` |
+| `--seed` | Initialization seed for `from-scratch` | `42` |
+| `--configuration-file` | Optional TOML file; explicit CLI flags win | — |
+| `--tokenizer-file` | `tokenizer.json` for `from-scratch` (checkpoint methods read it from the checkpoint) | — |
 | `--lora-rank` / `--lora-alpha` | LoRA rank and alpha (scale `alpha/rank`) | `16` / `32` |
 | `--lora-dropout` | Adapter dropout | `0` |
 | `--epochs` | Epochs | `3` |
@@ -238,6 +259,96 @@ output/train/
 The adapter tensor names are `model.layers.{index}.<projection>.lora_a` and
 `.lora_b` for `q_proj`, `k_proj`, `v_proj`, `o_proj`, `gate_proj`, `up_proj` and
 `down_proj`. Only the adapter is stored — the frozen base is never copied.
+
+## Full fine-tuning (`--method full`)
+
+`--method full` keeps the existing checkpoint weights but makes **every**
+parameter trainable (embeddings, norms, all attention and MLP projections, and
+the language-model head). It reuses the same forward pass and decision-position
+loss as the adapter methods. The geometry is read from the checkpoint
+`config.json`, so no geometry flags are required:
+
+```bash
+cargo run --release -p typed-lm-trainer -- train \
+  --method full \
+  --model-id /path/to/local/checkpoint \
+  --dataset resources/dataset.jsonl \
+  --output-directory output/full \
+  --epochs 3 --batch-size 4 --learning-rate 1e-4
+```
+
+## From scratch / full training
+
+`--method from-scratch` initializes **random weights** over an explicit geometry
+and trains **all** parameters. Because there is no checkpoint to read the shape
+or the tokenizer from, both must be supplied:
+
+- the geometry via the flags (`--architecture`, `--vocab-size`, `--hidden-size`,
+  `--num-hidden-layers`, `--num-attention-heads`, …) or the TOML `[model]`
+  section;
+- a tokenizer via `--tokenizer-file` (or the TOML `[tokenizer] file` key).
+
+Initialization is deterministic and reproducible from `--seed` (default `42`);
+RMSNorm weights are set to `1.0` and biases to `0.0`.
+
+```bash
+cargo run --release -p typed-lm-trainer -- train \
+  --method from-scratch \
+  --architecture qwen2 \
+  --vocab-size 151936 \
+  --hidden-size 512 \
+  --intermediate-size 2048 \
+  --num-hidden-layers 8 \
+  --num-attention-heads 8 \
+  --num-key-value-heads 4 \
+  --max-position-embeddings 1024 \
+  --tokenizer-file /path/to/tokenizer.json \
+  --dataset resources/dataset.jsonl \
+  --output-directory output/scratch \
+  --seed 42 \
+  --epochs 3 --batch-size 4 --learning-rate 1e-4
+```
+
+The run writes a **complete dense checkpoint** into `--output-directory`:
+
+```
+output/scratch/
+├── model.safetensors   # canonical Hugging Face tensor names, all parameters
+├── config.json         # reparseable model configuration
+└── tokenizer.json      # copy of the tokenizer passed with --tokenizer-file
+```
+
+This directory is a fully resolved checkpoint: point `typed-lm-serve` at it
+without any further copy or merge step:
+
+```bash
+cargo run --release -p typed-lm-serve -- --model-id output/scratch
+```
+
+> **Not a general-purpose assistant.** A from-scratch model is trained only on
+> the Jev decision objective over your dataset (cross-entropy at the decision
+> position), not with general causal-LM pretraining. It does **not** acquire
+> language understanding: it validates the architecture, the dataset and the
+> training pipeline end to end (and can be served), but it is not a
+> general-purpose assistant. Use a pretrained checkpoint (`lora`, `qlora` or
+> `full`) for real routing quality.
+
+## Configuration file (TOML)
+
+Any `train` invocation can be shortened with `--configuration-file <path.toml>`.
+Values resolve with the precedence **CLI flag > TOML key > default**: an explicit
+flag always wins, an absent flag takes the TOML value, and an absent key takes
+the built-in default. Section headers are `[run]`, `[model]`,
+`[initialization]`, `[dataset]` and `[tokenizer]`.
+
+```bash
+cargo run --release -p typed-lm-trainer -- train \
+  --configuration-file training.toml \
+  --output-directory output/override   # explicit flag beats the TOML value
+```
+
+See [Configuration file reference](configuration-file.md) for every key, its CLI
+flag and a worked precedence example.
 
 ## Quantize (PTQ)
 
