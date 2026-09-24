@@ -95,8 +95,12 @@ impl ParallelModel {
 
 /// Loads weights, config and tokenizer, exposing the model ready for inference.
 ///
-/// The model is architecture-aware (Llama or Qwen2) and format-aware (dense
-/// safetensors/pth/npz or GGUF quantized). Detection is done by
+/// Dense checkpoints (safetensors/pth/npz) load any of the seven supported
+/// dense families (Llama, Qwen2, Qwen3, Mistral, Gemma, Gemma2, Gemma3) by
+/// architecture detection: [`ParallelLlama`] is family-parameterized through
+/// [`ParallelModelConfig`], so a single forward implementation serves every
+/// family. GGUF-quantized checkpoints instead use [`ParallelQuantizedQwen2`],
+/// which implements Qwen2 only. Detection is done by
 /// [`typed_lm_common::checkpoint_resolver`]; this type consumes the
 /// resolved checkpoint and builds the vendored parallel forward pass so the
 /// key/value cache can be broadcast across the attention batch dimension.
@@ -118,6 +122,13 @@ impl LanguageModel {
         dtype: DType,
     ) -> anyhow::Result<Self> {
         let architecture = checkpoint.architecture;
+        if !dense_forward_supports_family(architecture) {
+            return Err(anyhow::anyhow!(
+                "architecture '{}' is not supported by the dense forward pass; supported families: {}",
+                architecture.name(),
+                ModelArchitecture::supported_names()
+            ));
+        }
         let prompt_template = PromptTemplate::for_architecture(architecture);
         let tokenizer = Tokenizer::from_file(&checkpoint.resolved.tokenizer_file)
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
@@ -146,6 +157,14 @@ impl LanguageModel {
                 ))
             }
             typed_lm_common::checkpoint::WeightLayout::Gguf { file } => {
+                if architecture != ModelArchitecture::Qwen2 {
+                    return Err(anyhow::anyhow!(
+                        "GGUF-quantized serving is only supported for Qwen2, but the checkpoint \
+                         declares architecture '{}'; convert to a dense format or use a Qwen2 \
+                         GGUF checkpoint",
+                        architecture.name()
+                    ));
+                }
                 let model = ParallelQuantizedQwen2::from_gguf(file, device)?;
                 // GGUF metadata carries the architecture parameters; the tokenizer
                 // is loaded from the companion `tokenizer.json`.
@@ -455,6 +474,17 @@ fn scheme_for_weight_kind(weight_kind: WeightKind) -> QuantizationScheme {
     }
 }
 
+/// Whether the dense forward pass can execute the given family.
+///
+/// Dense serving is family-parameterized through [`ParallelModelConfig`] and
+/// covers every [`ModelArchitecture::SUPPORTED`] family (Llama, Qwen2, Qwen3,
+/// Mistral, Gemma, Gemma2, Gemma3). Laying the contract out explicitly keeps
+/// the dispatch guarded and testable even though
+/// [`ModelArchitecture::from_model_type`] already filters unknown model types.
+fn dense_forward_supports_family(architecture: ModelArchitecture) -> bool {
+    ModelArchitecture::SUPPORTED.contains(&architecture)
+}
+
 /// Pads variable-length suffix token sequences to a common length for batching.
 ///
 /// Rows are right-padded with the zero token; under a causal mask the padding
@@ -540,6 +570,166 @@ mod tests {
             resolve_single_token_id(&tokenizer, &["A B".to_string(), "B".to_string()]),
             Some(1)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn dense_forward_supports_every_supported_family() {
+        for architecture in ModelArchitecture::SUPPORTED {
+            assert!(dense_forward_supports_family(architecture));
+        }
+    }
+
+    #[test]
+    fn read_config_parses_each_dense_family() -> anyhow::Result<()> {
+        let families: [(ModelArchitecture, serde_json::Value); 7] = [
+            (
+                ModelArchitecture::Llama,
+                serde_json::json!({
+                    "model_type": "llama",
+                    "hidden_size": 16,
+                    "intermediate_size": 32,
+                    "num_hidden_layers": 2,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "vocab_size": 100,
+                    "max_position_embeddings": 128,
+                    "rms_norm_eps": 1e-5,
+                    "rope_theta": 10000.0
+                }),
+            ),
+            (
+                ModelArchitecture::Qwen2,
+                serde_json::json!({
+                    "model_type": "qwen2",
+                    "hidden_size": 16,
+                    "intermediate_size": 32,
+                    "num_hidden_layers": 2,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "vocab_size": 100,
+                    "max_position_embeddings": 128,
+                    "rms_norm_eps": 1e-5,
+                    "rope_theta": 10000.0,
+                    "sliding_window": 32,
+                    "max_window_layers": 1,
+                    "use_sliding_window": false,
+                    "tie_word_embeddings": false,
+                    "hidden_act": "silu"
+                }),
+            ),
+            (
+                ModelArchitecture::Qwen3,
+                serde_json::json!({
+                    "model_type": "qwen3",
+                    "hidden_size": 16,
+                    "intermediate_size": 32,
+                    "num_hidden_layers": 2,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "vocab_size": 100,
+                    "max_position_embeddings": 128,
+                    "rms_norm_eps": 1e-5,
+                    "rope_theta": 10000.0,
+                    "head_dim": 4,
+                    "attention_bias": false,
+                    "tie_word_embeddings": false,
+                    "sliding_window": 32,
+                    "max_window_layers": 1,
+                    "use_sliding_window": false,
+                    "hidden_act": "silu"
+                }),
+            ),
+            (
+                ModelArchitecture::Mistral,
+                serde_json::json!({
+                    "model_type": "mistral",
+                    "hidden_size": 16,
+                    "intermediate_size": 32,
+                    "num_hidden_layers": 2,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "vocab_size": 100,
+                    "max_position_embeddings": 128,
+                    "rms_norm_eps": 1e-5,
+                    "rope_theta": 10000.0,
+                    "hidden_act": "silu",
+                    "sliding_window": 32
+                }),
+            ),
+            (
+                ModelArchitecture::Gemma,
+                serde_json::json!({
+                    "model_type": "gemma",
+                    "hidden_size": 16,
+                    "intermediate_size": 32,
+                    "num_hidden_layers": 2,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "vocab_size": 100,
+                    "max_position_embeddings": 128,
+                    "rms_norm_eps": 1e-5,
+                    "rope_theta": 10000.0,
+                    "attention_bias": false,
+                    "head_dim": 4,
+                    "hidden_act": "gelu_pytorch_tanh"
+                }),
+            ),
+            (
+                ModelArchitecture::Gemma2,
+                serde_json::json!({
+                    "model_type": "gemma2",
+                    "hidden_size": 16,
+                    "intermediate_size": 32,
+                    "num_hidden_layers": 2,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "vocab_size": 100,
+                    "max_position_embeddings": 128,
+                    "rms_norm_eps": 1e-5,
+                    "rope_theta": 10000.0,
+                    "attention_bias": false,
+                    "head_dim": 4,
+                    "hidden_activation": "gelu_pytorch_tanh",
+                    "final_logit_softcapping": 30.0,
+                    "attn_logit_softcapping": 50.0,
+                    "query_pre_attn_scalar": 4,
+                    "sliding_window": 32
+                }),
+            ),
+            (
+                ModelArchitecture::Gemma3,
+                serde_json::json!({
+                    "model_type": "gemma3",
+                    "hidden_size": 16,
+                    "intermediate_size": 32,
+                    "num_hidden_layers": 2,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "vocab_size": 100,
+                    "max_position_embeddings": 128,
+                    "rms_norm_eps": 1e-5,
+                    "rope_theta": 10000.0,
+                    "attention_bias": false,
+                    "head_dim": 4,
+                    "hidden_activation": "gelu_pytorch_tanh",
+                    "rope_local_base_freq": 10000.0,
+                    "final_logit_softcapping": 30.0,
+                    "attn_logit_softcapping": 50.0,
+                    "query_pre_attn_scalar": 4,
+                    "sliding_window": 32,
+                    "sliding_window_pattern": 6
+                }),
+            ),
+        ];
+
+        let directory = tempfile::tempdir()?;
+        for (architecture, value) in families {
+            let config_file = directory.path().join(format!("{}.json", architecture.name()));
+            std::fs::write(&config_file, serde_json::to_vec(&value)?)?;
+            let config = read_config(&config_file, architecture)?;
+            assert_eq!(config.architecture, architecture);
+        }
         Ok(())
     }
 
