@@ -246,6 +246,136 @@ mod tests {
     }
 
     #[test]
+    fn qwen2_style_weights_with_qkv_biases_round_trip_through_fp8() -> anyhow::Result<()> {
+        let device = Device::Cpu;
+        let directory = tempfile::tempdir()?;
+        let mut weights = HashMap::new();
+        weights.insert(
+            "model.layers.0.self_attn.q_proj.weight".to_string(),
+            Tensor::new(&[[1.0_f32, -2.0], [0.5, 3.0]], &device)?,
+        );
+        weights.insert(
+            "model.layers.0.self_attn.q_proj.bias".to_string(),
+            Tensor::new(&[0.25_f32, -0.5], &device)?,
+        );
+        weights.insert(
+            "model.embed_tokens.weight".to_string(),
+            Tensor::new(&[[1.0_f32, 0.0], [0.0, 1.0]], &device)?,
+        );
+        weights.insert(
+            "model.norm.weight".to_string(),
+            Tensor::new(&[1.0_f32, 1.0], &device)?,
+        );
+        export_quantized(weights, QuantizationScheme::Fp8, directory.path())?;
+        let restored = load_quantized(directory.path(), &device)?;
+        assert_eq!(restored.len(), 4);
+        for name in [
+            "model.layers.0.self_attn.q_proj.weight",
+            "model.layers.0.self_attn.q_proj.bias",
+            "model.embed_tokens.weight",
+            "model.norm.weight",
+        ] {
+            let tensor = restored
+                .get(name)
+                .ok_or_else(|| anyhow::anyhow!("missing weight '{name}' after FP8 round trip"))?;
+            assert_eq!(tensor.dtype(), DType::F32);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn gemma_style_weights_round_trip_through_fp4() -> anyhow::Result<()> {
+        let device = Device::Cpu;
+        let directory = tempfile::tempdir()?;
+        let mut weights = HashMap::new();
+        weights.insert(
+            "model.layers.0.mlp.gate_proj.weight".to_string(),
+            Tensor::new(&[[1.0_f32, -2.0], [0.5, 3.0]], &device)?,
+        );
+        weights.insert(
+            "model.layers.0.mlp.down_proj.weight".to_string(),
+            Tensor::new(&[[0.5_f32, 0.5], [0.5, 0.5]], &device)?,
+        );
+        weights.insert(
+            "model.embed_tokens.weight".to_string(),
+            Tensor::new(&[[1.0_f32, 0.0], [0.0, 1.0]], &device)?,
+        );
+        export_quantized(weights, QuantizationScheme::Fp4, directory.path())?;
+        let restored = load_quantized(directory.path(), &device)?;
+        assert_eq!(restored.len(), 3);
+        for name in [
+            "model.layers.0.mlp.gate_proj.weight",
+            "model.layers.0.mlp.down_proj.weight",
+            "model.embed_tokens.weight",
+        ] {
+            let tensor = restored
+                .get(name)
+                .ok_or_else(|| anyhow::anyhow!("missing weight '{name}' after FP4 round trip"))?;
+            assert_eq!(tensor.elem_count(), 4);
+            assert_eq!(tensor.dtype(), DType::F32);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_rank_one_bias_round_trips_through_fp4() -> anyhow::Result<()> {
+        let device = Device::Cpu;
+        let directory = tempfile::tempdir()?;
+        let mut weights = HashMap::new();
+        weights.insert(
+            "model.layers.0.mlp.up_proj.bias".to_string(),
+            Tensor::new(&[1.0_f32, -2.0, 3.0, -4.0, 5.0, -6.0], &device)?,
+        );
+        export_quantized(weights, QuantizationScheme::Fp4, directory.path())?;
+        let restored = load_quantized(directory.path(), &device)?;
+        let bias = restored
+            .get("model.layers.0.mlp.up_proj.bias")
+            .ok_or_else(|| anyhow::anyhow!("missing bias after FP4 round trip"))?;
+        assert_eq!(bias.elem_count(), 6);
+        assert_eq!(bias.dims(), &[6_usize]);
+        assert_eq!(bias.dtype(), DType::F32);
+        Ok(())
+    }
+
+    #[test]
+    fn dense_export_is_name_agnostic() -> anyhow::Result<()> {
+        let device = Device::Cpu;
+        let directory = tempfile::tempdir()?;
+        let mut weights = HashMap::new();
+        weights.insert(
+            "model.layers.0.self_attn.q_proj.weight".to_string(),
+            Tensor::new(&[[1.0_f32, -2.0], [0.5, 3.0]], &device)?,
+        );
+        weights.insert(
+            "model.layers.0.mlp.gate_proj.weight".to_string(),
+            Tensor::new(&[[0.5_f32, 0.5], [0.5, 0.5]], &device)?,
+        );
+        weights.insert(
+            "model.embed_tokens.weight".to_string(),
+            Tensor::new(&[[1.0_f32, 0.0], [0.0, 1.0]], &device)?,
+        );
+        weights.insert(
+            "model.norm.weight".to_string(),
+            Tensor::new(&[1.0_f32, 1.0], &device)?,
+        );
+        export_quantized(weights, QuantizationScheme::None, directory.path())?;
+        let restored = load_quantized(directory.path(), &device)?;
+        assert_eq!(restored.len(), 4);
+        for name in [
+            "model.layers.0.self_attn.q_proj.weight",
+            "model.layers.0.mlp.gate_proj.weight",
+            "model.embed_tokens.weight",
+            "model.norm.weight",
+        ] {
+            let tensor = restored
+                .get(name)
+                .ok_or_else(|| anyhow::anyhow!("missing weight '{name}' in dense export"))?;
+            assert_eq!(tensor.dtype(), DType::F32);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn a_missing_config_is_an_error() -> anyhow::Result<()> {
         let device = Device::Cpu;
         let directory = tempfile::tempdir()?;
