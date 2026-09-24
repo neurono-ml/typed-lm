@@ -156,10 +156,10 @@ mod tests {
 
     #[test]
     fn empty_choice_criteria_is_rejected() -> anyhow::Result<()> {
-        let req = request_with(serde_json::json!({
+        let request = request_with(serde_json::json!({
             "c": {"type": "choice", "instructions": "Q?", "criteria": {}}
         }))?;
-        assert!(req.validate().is_err());
+        assert!(request.validate().is_err());
         Ok(())
     }
 
@@ -187,8 +187,8 @@ mod tests {
         let raw = serde_json::json!({
             "model": "jev-latest", "state": "x", "questions": {}
         });
-        let req: SystemOneRequest = serde_json::from_value(raw)?;
-        assert!(req.validate().is_err());
+        let request: SystemOneRequest = serde_json::from_value(raw)?;
+        assert!(request.validate().is_err());
         Ok(())
     }
 
@@ -209,7 +209,7 @@ mod tests {
                 noul: 0.9,
             }),
         );
-        let resp = SystemOneResponse {
+        let response = SystemOneResponse {
             model: "jev-latest".to_string(),
             answers,
             usage: Usage {
@@ -217,8 +217,8 @@ mod tests {
                 output_tokens: 2,
             },
         };
-        let v: serde_json::Value = serde_json::to_value(&resp)?;
-        assert_eq!(v["answers"]["r"]["type"], "noul");
+        let serialized: serde_json::Value = serde_json::to_value(&response)?;
+        assert_eq!(serialized["answers"]["r"]["type"], "noul");
         Ok(())
     }
 }
