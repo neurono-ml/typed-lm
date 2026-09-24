@@ -1,6 +1,14 @@
 //! Training loop, loss, optimizer and checkpointing.
 //!
-//! Filled in by Wave 5.
+//! The training tree breaks down as:
+//!
+//! - [`loss`] — decision-position cross-entropy and the optional KL calibration.
+//! - [`optimizer`] — AdamW, warmup/cosine schedule, gradient clipping and
+//!   accumulation.
+//! - [`checkpoint`] — saving and loading the LoRA adapter.
+//! - [`r#loop`] — the generic epoch loop over a [`r#loop::TrainableModel`].
 
-/// Placeholder removed once training submodules are declared in Wave 5.
-pub const TRAINING_MODULE_PLACEHOLDER: &str = "typed-lm-trainer training";
+pub mod checkpoint;
+pub mod r#loop;
+pub mod loss;
+pub mod optimizer;

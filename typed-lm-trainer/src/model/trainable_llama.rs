@@ -454,6 +454,36 @@ impl TrainableLlama {
     pub fn vocabulary_size(&self) -> usize {
         self.token_embedding.dim(0).unwrap_or(0)
     }
+
+    /// Every trainable adapter variable, in a deterministic order.
+    pub fn adapter_variables(&self) -> Vec<candle_core::Var> {
+        let mut variables: Vec<candle_core::Var> = Vec::new();
+        for block in &self.blocks {
+            for projection in [
+                &block.attention.query_projection,
+                &block.attention.key_projection,
+                &block.attention.value_projection,
+                &block.attention.output_projection,
+                &block.mlp.gate_projection,
+                &block.mlp.up_projection,
+                &block.mlp.down_projection,
+            ] {
+                variables.push(projection.down_projection().clone());
+                variables.push(projection.up_projection().clone());
+            }
+        }
+        variables
+    }
+}
+
+impl crate::training::r#loop::TrainableModel for TrainableLlama {
+    fn variables(&self) -> Vec<candle_core::Var> {
+        self.adapter_variables()
+    }
+
+    fn forward(&self, batch: &crate::dataset::collate::TrainingBatch) -> anyhow::Result<Tensor> {
+        Ok(TrainableLlama::forward(self, &batch.input_ids)?)
+    }
 }
 
 /// Builds a LoRA-wrapped projection from the frozen base weight.
@@ -756,6 +786,57 @@ mod tests {
         assert!(
             last_loss < first_loss,
             "the loss must fall: first {first_loss}, last {last_loss}"
+        );
+        Ok(())
+    }
+
+    /// Wave 5 end-to-end: the generic training loop overfits a dummy batch.
+    #[test]
+    fn training_loop_reduces_the_loss_on_a_real_trainable_model() -> anyhow::Result<()> {
+        use crate::dataset::collate::TrainingBatch;
+        use crate::training::r#loop::{train, TrainableModel, TrainingLoopConfiguration};
+
+        let device = Device::Cpu;
+        let config = tiny_config();
+        let base = base_tensors(&config)?;
+        let mut variable_map = VarMap::new();
+        let model = TrainableLlama::load(
+            &base,
+            &config,
+            LoRAConfiguration::new(4, 8.0),
+            &mut variable_map,
+            &device,
+        )?;
+        assert!(!model.variables().is_empty());
+
+        let batch = TrainingBatch {
+            input_ids: Tensor::new(&[[1_u32, 2, 3, 4]], &device)?,
+            decision_mask: Tensor::new(&[[0_u32, 0, 0, 1]], &device)?,
+            decision_positions: Tensor::new(&[3_u32], &device)?,
+            label_token_ids: Tensor::new(&[7_u32], &device)?,
+            sequence_length: 4,
+        };
+        let configuration = TrainingLoopConfiguration {
+            epochs: 40,
+            learning_rate: 0.5,
+            warmup_steps: 2,
+            maximum_gradient_norm: 10.0,
+            ..TrainingLoopConfiguration::default()
+        };
+        let outcome = train(&model, &[batch], &configuration, &device)?;
+        let first = outcome
+            .epochs
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("no metrics recorded"))?;
+        let last = outcome
+            .epochs
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("no metrics recorded"))?;
+        assert!(
+            last.mean_loss < first.mean_loss,
+            "loop loss must fall: first {}, last {}",
+            first.mean_loss,
+            last.mean_loss
         );
         Ok(())
     }
