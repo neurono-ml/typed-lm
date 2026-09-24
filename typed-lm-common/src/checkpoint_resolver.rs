@@ -628,4 +628,50 @@ mod tests {
         }
         Ok(())
     }
+
+    #[test]
+    fn local_fp8_safetensors_is_loadable() -> anyhow::Result<()> {
+        // An FP8 checkpoint is no longer rejected as UnsupportedFloat8: it is
+        // resolved as WeightKind::Float8 so the loader dequantizes it.
+        let directory = tempfile::tempdir()?;
+        std::fs::write(
+            directory.path().join(CONFIG_NAME),
+            br#"{"model_type": "qwen2"}"#,
+        )?;
+        std::fs::write(directory.path().join(TOKENIZER_NAME), b"{}")?;
+        write_safetensors(
+            &directory.path().join(SINGLE_SAFETENSORS_NAME),
+            &[("embed.weight", "F8_E4M3"), ("norm.weight", "BF16")],
+        )?;
+        let reference = ModelReference::Local {
+            path: directory.path().to_path_buf(),
+        };
+        let resolver = LocalCheckpointResolver::new(directory.path().to_path_buf(), None, None);
+        let checkpoint = resolver.resolve(&reference, None)?;
+        assert_eq!(checkpoint.weight_kind, WeightKind::Float8);
+        assert_ne!(checkpoint.weight_kind, WeightKind::UnsupportedFloat8);
+        assert!(checkpoint.weight_kind.is_low_precision_float());
+        Ok(())
+    }
+
+    #[test]
+    fn local_mxfp4_safetensors_is_loadable_as_float4() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        std::fs::write(
+            directory.path().join(CONFIG_NAME),
+            br#"{"model_type": "llama"}"#,
+        )?;
+        std::fs::write(directory.path().join(TOKENIZER_NAME), b"{}")?;
+        write_safetensors(
+            &directory.path().join(SINGLE_SAFETENSORS_NAME),
+            &[("layer.weight", "MXFP4"), ("layer.scale", "F8_E8M0")],
+        )?;
+        let reference = ModelReference::Local {
+            path: directory.path().to_path_buf(),
+        };
+        let resolver = LocalCheckpointResolver::new(directory.path().to_path_buf(), None, None);
+        let checkpoint = resolver.resolve(&reference, None)?;
+        assert_eq!(checkpoint.weight_kind, WeightKind::Float4);
+        Ok(())
+    }
 }
