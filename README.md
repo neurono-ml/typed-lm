@@ -1,12 +1,17 @@
 # typed-lm
 
-Rust monorepo for **deterministic inference** and **adapter training** of
-Llama/Qwen2-style models, part of the **Sciencekit** ecosystem. Instead of
-autoregressive text generation, the server classifies answers in a **single
-forward pass**: each question is answered from the logits of a local model run
-with [Candle](https://github.com/huggingface/candle). The trainer produces
-LoRA/QLoRA adapters and quantized artifacts (FP8/FP4) that the server consumes
-directly.
+Rust monorepo for **deterministic inference** and **adapter training** of dense
+decoder models, part of the **Sciencekit** ecosystem. Instead of autoregressive
+text generation, the server classifies answers in a **single forward pass**:
+each question is answered from the logits of a local model run with
+[Candle](https://github.com/huggingface/candle). The supported families are
+**Llama, Qwen2, Qwen3, Mistral, Gemma, Gemma2 and Gemma3**, detected
+automatically from the `model_type` field in `config.json`
+(see [Supported architectures](docs/running.md#supported-architectures)).
+Mixture-of-Experts and multi-head-latent-attention families (for example
+`mixtral`, `qwen3_moe`, `deepseek_v2`/`deepseek_v3`) are **not supported** and
+are rejected at load time. The trainer produces LoRA/QLoRA adapters and
+quantized artifacts (FP8/FP4) that the server consumes directly.
 
 The HTTP API is compatible with the **Jev (TypeSafe AI)** format: the client
 sends `state` (case facts) and `questions` (`noul`/`choice`/`score` with
@@ -134,8 +139,12 @@ A reproducible CPU E2E script lives in `temporary/e2e/run_e2e_cpu.sh`.
   calibrates the distribution (binary softmax for `noul`, temperature for
   `choice`/`score`).
 - **Parallel forward (`typed-lm-serve/src/infrastructure/parallel_llama.rs`)**:
-  a vendored, broadcastable Llama implementation, validated against upstream
-  `Llama`/`Qwen2` by `#[ignore]` equivalence tests.
+  a vendored, broadcastable dense decoder implementation covering every
+  supported family (Llama, Qwen2, Qwen3, Mistral, Gemma, Gemma2, Gemma3),
+  validated against upstream by `#[ignore]` equivalence tests. GGUF-quantized
+  checkpoints use a Qwen2-only path
+  (`parallel_quantized_qwen2.rs`); any other family served from GGUF is
+  rejected with an actionable message.
 - **Training (`typed-lm-trainer/src/`)**: `dataset` (discovery/record/loader/
   collate), `model` (precision/LoRA/differentiable forward/weight loading),
   `training` (loss/optimizer/checkpoint/loop) and `quantization` (export).

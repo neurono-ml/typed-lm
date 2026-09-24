@@ -80,11 +80,36 @@ The layout is detected automatically:
 - **GGUF** — dense or GGML-quantized (for example `Q4_K_M`);
 - **PyTorch** `.pth`/`.bin` and **NumPy** `.npz`.
 
-Architectures: **Llama** and **Qwen2**. Weight kinds: full precision
-(`BF16`/`F16`/`F32`), GGML-quantized (GGUF), and **FP8 (`F8_E4M3`/`F8_E5M2`)** and
-**FP4 (MXFP4)** — the last two are **dequantized on load** to dense F32 because
-Candle has no matmul kernel for them. `GPTQ`/`AWQ` are rejected with a clear
-message.
+Weight kinds: full precision (`BF16`/`F16`/`F32`), GGML-quantized (GGUF), and
+**FP8 (`F8_E4M3`/`F8_E5M2`)** and **FP4 (MXFP4)** — the last two are
+**dequantized on load** to dense F32 because Candle has no matmul kernel for
+them. `GPTQ`/`AWQ` are rejected with a clear message.
+
+## Supported architectures
+
+The architecture is detected automatically from the `model_type` field in
+`config.json`; no flag is needed. The seven supported dense decoder families and
+their `model_type` values are:
+
+| Family | `model_type` |
+|---|---|
+| Llama | `llama` |
+| Qwen2 | `qwen2` |
+| Qwen3 | `qwen3` |
+| Mistral | `mistral` |
+| Gemma | `gemma` |
+| Gemma2 | `gemma2` |
+| Gemma3 | `gemma3` |
+
+Mixture-of-Experts and multi-head-latent-attention families are **not
+supported** and are rejected at load time with an actionable error:
+`mixtral`, `qwen3_moe`, `deepseek_v2` (also `deepseek2`) and `deepseek_v3`.
+DeepSeek is therefore excluded.
+
+Dense safetensors/PyTorch/NumPy checkpoints of any of the seven families are
+served. **GGUF-quantized serving is Qwen2-only**: a GGUF checkpoint declaring
+another architecture is rejected, and a non-Qwen2 model must be converted to a
+dense format first.
 
 ## GPU (CUDA) via the devcontainer
 
