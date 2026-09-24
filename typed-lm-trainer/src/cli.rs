@@ -268,6 +268,14 @@ pub struct TrainArguments {
     /// Optional TOML configuration file; explicit CLI flags take precedence.
     #[arg(long)]
     pub configuration_file: Option<PathBuf>,
+
+    /// Tokenizer artifact used by `--method from-scratch` (`tokenizer.json`).
+    ///
+    /// Checkpoint-based methods read the tokenizer from the checkpoint; a
+    /// from-scratch run has none, so the tokenizer must be provided here or via
+    /// the TOML `[tokenizer] file` key.
+    #[arg(long)]
+    pub tokenizer_file: Option<PathBuf>,
 }
 
 /// Arguments for the `quantize` subcommand.

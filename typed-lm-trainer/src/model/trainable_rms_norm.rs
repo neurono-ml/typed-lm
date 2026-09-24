@@ -17,7 +17,7 @@ use crate::error::TrainerError;
 /// When `unit_offset` is set the effective multiplicative weight is
 /// `(1 + weight)`, matching the Gemma* families that store a zero-centered norm
 /// weight; otherwise the effective weight is the weight itself.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TrainableRmsNorm {
     weight: Var,
     epsilon: f64,

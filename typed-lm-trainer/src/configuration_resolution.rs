@@ -87,6 +87,14 @@ pub fn resolve_train_arguments(
             arguments.seed = value;
         }
     }
+    if !flag_is_explicit(matches, "tokenizer_file") {
+        if let Some(value) = configuration
+            .tokenizer()
+            .and_then(|section| section.file.as_ref())
+        {
+            arguments.tokenizer_file = Some(value.into());
+        }
+    }
     if !flag_is_explicit(matches, "lora_rank") {
         if let Some(value) = run.and_then(|section| section.lora_rank) {
             arguments.lora_rank = value;

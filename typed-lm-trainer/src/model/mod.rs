@@ -12,11 +12,11 @@
 //!   from-scratch training.
 //! - [`trainable_linear`]/[`trainable_rms_norm`] — fully-trainable primitives
 //!   whose weights are `Var`s (full-parameter training).
-
 pub mod initialization;
 pub mod lora;
 pub mod precision;
 pub mod trainable_dense;
+pub mod trainable_full;
 pub mod trainable_linear;
 pub mod trainable_llama;
 pub mod trainable_rms_norm;

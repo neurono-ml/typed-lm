@@ -11,7 +11,6 @@ use std::collections::HashMap;
 
 use candle_core::DType;
 use candle_nn::VarMap;
-use clap::Parser;
 use typed_lm_common::checkpoint::ModelReference;
 use typed_lm_common::checkpoint_resolver::{LoadableCheckpoint, LocalCheckpointResolver};
 use typed_lm_common::model_config::ParallelModelConfig;
@@ -19,18 +18,25 @@ use typed_lm_common::quantization::QuantizationScheme;
 use typed_lm_common::tokenizer::load_tokenizer;
 
 use typed_lm_trainer::cli::{
-    Command, QuantizationMode, QuantizeArguments, TrainArguments, TrainerArguments,
+    Command, ModelGeometryArguments, QuantizationMode, QuantizeArguments, TrainArguments,
+    TrainerArguments, TrainingMethod,
 };
 use typed_lm_trainer::dataset::collate::{build_batches, tokenize_item};
 use typed_lm_trainer::dataset::discovery::discover_dataset_files;
 use typed_lm_trainer::dataset::loader::load_records;
 use typed_lm_trainer::dataset::record::expand_records;
 use typed_lm_trainer::error::TrainerError;
-use typed_lm_trainer::model::trainable_llama::LoRAConfiguration;
+use typed_lm_trainer::model::initialization::{
+    initialize_model_tensors, InitializationConfiguration,
+};
 use typed_lm_trainer::model::trainable_dense;
+use typed_lm_trainer::model::trainable_full::TrainableFull;
+use typed_lm_trainer::model::trainable_llama::LoRAConfiguration;
 use typed_lm_trainer::model::weight_loading::FrozenBase;
 use typed_lm_trainer::quantization::export::{export_quantized, merge_adapter};
-use typed_lm_trainer::training::checkpoint::{save_adapter, AdapterConfiguration};
+use typed_lm_trainer::training::checkpoint::{
+    save_adapter, save_full_checkpoint, AdapterConfiguration,
+};
 use typed_lm_trainer::training::r#loop::{train, TrainingLoopConfiguration};
 
 /// Location of the loaded context used as the system prompt during training.
@@ -41,7 +47,7 @@ const CONTEXT_FILE: &str = "resources/memory.md";
 
 #[tokio::main]
 async fn main() -> Result<(), TrainerError> {
-    let arguments = TrainerArguments::parse();
+    let arguments = TrainerArguments::parse_with_configuration()?;
     match arguments.command {
         Command::Train(train_arguments) => run_train(train_arguments).await,
         Command::Quantize(quantize_arguments) => run_quantize(quantize_arguments).await,
@@ -72,6 +78,11 @@ async fn run_train(arguments: TrainArguments) -> Result<(), TrainerError> {
     }
 
     let device = arguments.device.resolve()?;
+    if method.trains_all_parameters() {
+        return run_train_full_parameter(arguments, method, quantization_mode, training_scheme, &device)
+            .await;
+    }
+
     let reference = ModelReference::resolve(&arguments.model_id);
     let checkpoint = resolve_local_checkpoint(&reference)?;
     tracing::info!(
@@ -166,6 +177,205 @@ async fn run_train(arguments: TrainArguments) -> Result<(), TrainerError> {
         tracing::info!(scheme = training_scheme.name(), "quantized artifact saved");
     }
     Ok(())
+}
+
+/// Runs `--method full` (from a checkpoint) or `--method from-scratch`.
+///
+/// Both methods train every parameter. `full` initializes the model from an
+/// existing dense checkpoint; `from-scratch` initializes it deterministically
+/// from the geometry in `--architecture`/`--hidden-size`/… (or the TOML
+/// `[model]` section) and a seed. The result is a complete dense checkpoint
+/// (`model.safetensors` + `config.json` + `tokenizer.json`) that the server
+/// serves directly.
+async fn run_train_full_parameter(
+    arguments: TrainArguments,
+    method: TrainingMethod,
+    quantization_mode: QuantizationMode,
+    training_scheme: QuantizationScheme,
+    device: &candle_core::Device,
+) -> Result<(), TrainerError> {
+    let from_scratch = method == TrainingMethod::FromScratch;
+    let (configuration, tokenizer_path, source_tensors) = if from_scratch {
+        let configuration = configuration_from_geometry(&arguments.geometry)?;
+        let tokenizer_path = resolve_scratch_tokenizer(&arguments)?;
+        let initialization = InitializationConfiguration::default();
+        let tensors =
+            initialize_model_tensors(&configuration, &initialization, arguments.seed, device)?;
+        tracing::info!(
+            architecture = configuration.architecture.name(),
+            seed = arguments.seed,
+            "initialized random weights for from-scratch training"
+        );
+        (configuration, tokenizer_path, tensors)
+    } else {
+        let reference = ModelReference::resolve(&arguments.model_id);
+        let checkpoint = resolve_local_checkpoint(&reference)?;
+        let configuration = read_model_configuration(&checkpoint)?;
+        let frozen_base = FrozenBase::from_checkpoint(&checkpoint, device)?;
+        (
+            configuration,
+            checkpoint.resolved.tokenizer_file.clone(),
+            frozen_base.tensors().clone(),
+        )
+    };
+
+    // Build the decision-position batches.
+    let dataset_files = discover_dataset_files(&arguments.dataset).map_err(TrainerError::from)?;
+    let records = load_records(&dataset_files)?;
+    let items = expand_records(&records)?;
+    let tokenizer = load_tokenizer(&tokenizer_path)?;
+    let template = typed_lm_common::prompt_template::PromptTemplate::for_architecture(
+        configuration.architecture,
+    );
+    let context_text = load_context_text();
+    let tokenized: Vec<_> = items
+        .iter()
+        .map(|item| tokenize_item(&tokenizer, template, &context_text, item))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let batches = build_batches(
+        tokenized,
+        arguments.batch_size,
+        arguments.max_sequence_length,
+        device,
+    )?;
+    tracing::info!(
+        records = records.len(),
+        items = items.len(),
+        batches = batches.len(),
+        "dataset collated"
+    );
+
+    let mut variable_map = VarMap::new();
+    let model = TrainableFull::from_initialized(
+        &source_tensors,
+        &configuration,
+        &mut variable_map,
+        device,
+    )?;
+
+    let loop_configuration = TrainingLoopConfiguration {
+        epochs: arguments.epochs,
+        learning_rate: arguments.learning_rate,
+        warmup_steps: arguments.warmup_steps,
+        weight_decay: arguments.weight_decay,
+        maximum_gradient_norm: arguments.maximum_gradient_norm,
+        gradient_accumulation_steps: arguments.gradient_accumulation_steps,
+        minimum_improvement: arguments.minimum_improvement,
+        early_stop_patience: arguments.early_stop_patience,
+        minimum_learning_rate_ratio: 0.0,
+    };
+    let outcome = train(&model, &batches, &loop_configuration, device)?;
+    tracing::info!(
+        epochs = outcome.epochs.len(),
+        stopped_early = outcome.stopped_early,
+        "training finished"
+    );
+
+    // Persist the complete checkpoint (weights + config + tokenizer).
+    let state = model.state_dict()?;
+    let weights_path = save_full_checkpoint(
+        &state,
+        &configuration,
+        &tokenizer_path,
+        &arguments.output_directory,
+    )?;
+    tracing::info!(
+        directory = %arguments.output_directory.display(),
+        weights = %weights_path.display(),
+        "full checkpoint saved"
+    );
+
+    // Optional post-training quantization of the complete checkpoint.
+    if quantization_mode == QuantizationMode::PostTraining
+        && training_scheme != QuantizationScheme::None
+    {
+        export_quantized(state, training_scheme, &arguments.output_directory)?;
+        tracing::info!(scheme = training_scheme.name(), "quantized artifact saved");
+    }
+    Ok(())
+}
+
+/// Builds a [`ParallelModelConfig`] from explicit CLI/TOML geometry.
+fn configuration_from_geometry(
+    geometry: &ModelGeometryArguments,
+) -> Result<ParallelModelConfig, TrainerError> {
+    let architecture_name = geometry.architecture.as_deref().ok_or_else(|| {
+        TrainerError::Configuration(
+            "--method from-scratch requires --architecture (or a [model] section)".to_string(),
+        )
+    })?;
+    let architecture = typed_lm_common::checkpoint::ModelArchitecture::from_model_type(
+        architecture_name,
+    )
+    .ok_or_else(|| {
+        TrainerError::Configuration(format!(
+            "unsupported architecture '{architecture_name}': expected one of {}",
+            typed_lm_common::checkpoint::ModelArchitecture::supported_names()
+        ))
+    })?;
+    let required = |value: Option<usize>, flag: &str| -> Result<usize, TrainerError> {
+        value.ok_or_else(|| {
+            TrainerError::Configuration(format!(
+                "--method from-scratch requires {flag} (or a [model] section)"
+            ))
+        })
+    };
+    let hidden_size = required(geometry.hidden_size, "--hidden-size")?;
+    let num_attention_heads = required(geometry.num_attention_heads, "--num-attention-heads")?;
+    let traits = typed_lm_common::architecture_traits::DenseArchitectureTraits::for_architecture(
+        architecture,
+    );
+    let explicit_head_dimension = traits
+        .explicit_head_dimension
+        .then_some(hidden_size / num_attention_heads);
+    Ok(ParallelModelConfig {
+        architecture,
+        vocab_size: required(geometry.vocab_size, "--vocab-size")?,
+        hidden_size,
+        intermediate_size: geometry
+            .intermediate_size
+            .unwrap_or(hidden_size * 4),
+        num_hidden_layers: required(geometry.num_hidden_layers, "--num-hidden-layers")?,
+        num_attention_heads,
+        num_key_value_heads: geometry
+            .num_key_value_heads
+            .unwrap_or(num_attention_heads),
+        max_position_embeddings: geometry
+            .max_position_embeddings
+            .unwrap_or(2048),
+        rms_norm_eps: geometry.rms_norm_eps.unwrap_or(1e-6),
+        rope_theta: geometry.rope_theta.unwrap_or(1000000.0),
+        tie_word_embeddings: geometry.tie_word_embeddings.unwrap_or(false),
+        rope_scaling: None,
+        attention_bias: architecture.has_query_key_value_bias(),
+        explicit_head_dimension,
+        sliding_window: None,
+        max_window_layers: 0,
+        logit_softcapping: None,
+        attention_logit_softcapping: None,
+        query_pre_attention_scalar: None,
+        rms_norm_unit_offset: traits.rms_norm_unit_offset,
+        embedding_scale: traits
+            .scales_embeddings
+            .then_some((hidden_size as f64).sqrt()),
+        rope_local_base_frequency: None,
+    })
+}
+
+/// Locates the tokenizer for a from-scratch run.
+///
+/// A from-scratch run has no checkpoint, so the tokenizer must be provided
+/// explicitly via `--tokenizer-file` or the `[tokenizer] file` TOML key.
+/// Without it the run cannot build dataset batches and fails with an actionable
+/// configuration error.
+fn resolve_scratch_tokenizer(arguments: &TrainArguments) -> Result<std::path::PathBuf, TrainerError> {
+    arguments.tokenizer_file.clone().ok_or_else(|| {
+        TrainerError::Configuration(
+            "--method from-scratch requires a tokenizer: pass --tokenizer-file or set \
+             [tokenizer] file in the configuration file"
+                .to_string(),
+        )
+    })
 }
 
 /// Runs the post-training quantization pipeline.
