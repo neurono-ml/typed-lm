@@ -202,7 +202,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_all_three_question_types() {
+    fn parses_all_three_question_types() -> anyhow::Result<()> {
         let raw = serde_json::json!({
             "model": "jev-latest",
             "state": "charged twice",
@@ -214,8 +214,9 @@ mod tests {
                         "criteria": ["Routine", "Urgent", "Emergency"]}
             }
         });
-        let req: SystemOneRequest = serde_json::from_value(raw).unwrap();
-        assert_eq!(req.questions.len(), 3);
+        let request: SystemOneRequest = serde_json::from_value(raw)?;
+        assert_eq!(request.questions.len(), 3);
+        Ok(())
     }
 
     #[test]
@@ -239,49 +240,52 @@ mod tests {
     }
 
     #[test]
-    fn empty_choice_criteria_is_rejected() {
+    fn empty_choice_criteria_is_rejected() -> anyhow::Result<()> {
         let req = request_with(serde_json::json!({
             "c": {"type": "choice", "instructions": "Q?", "criteria": {}}
-        }));
+        }))?;
         assert!(req.validate().is_err());
+        Ok(())
     }
 
     #[test]
-    fn score_requires_between_two_and_ten_levels() {
+    fn score_requires_between_two_and_ten_levels() -> anyhow::Result<()> {
         let one = request_with(serde_json::json!({
             "s": {"type": "score", "instructions": "Q?", "criteria": ["only"]}
-        }));
+        }))?;
         assert!(one.validate().is_err());
         let eleven = request_with(serde_json::json!({
             "s": {"type": "score", "instructions": "Q?",
                   "criteria": ["0","1","2","3","4","5","6","7","8","9","10"]}
-        }));
+        }))?;
         assert!(eleven.validate().is_err());
         let three = request_with(serde_json::json!({
             "s": {"type": "score", "instructions": "Q?",
                   "criteria": ["low", "mid", "high"]}
-        }));
+        }))?;
         assert!(three.validate().is_ok());
+        Ok(())
     }
 
     #[test]
-    fn empty_questions_map_is_rejected() {
+    fn empty_questions_map_is_rejected() -> anyhow::Result<()> {
         let raw = serde_json::json!({
             "model": "jev-latest", "state": "x", "questions": {}
         });
-        let req: SystemOneRequest = serde_json::from_value(raw).unwrap();
+        let req: SystemOneRequest = serde_json::from_value(raw)?;
         assert!(req.validate().is_err());
+        Ok(())
     }
 
-    fn request_with(questions: serde_json::Value) -> SystemOneRequest {
+    fn request_with(questions: serde_json::Value) -> anyhow::Result<SystemOneRequest> {
         let raw = serde_json::json!({
             "model": "jev-latest", "state": "x", "questions": questions
         });
-        serde_json::from_value(raw).unwrap()
+        Ok(serde_json::from_value(raw)?)
     }
 
     #[test]
-    fn response_serializes_typed_answers() {
+    fn response_serializes_typed_answers() -> anyhow::Result<()> {
         let mut answers = HashMap::new();
         answers.insert(
             "r".to_string(),
@@ -298,7 +302,45 @@ mod tests {
                 output_tokens: 2,
             },
         };
-        let v = serde_json::to_value(&resp).unwrap();
+        let v: serde_json::Value = serde_json::to_value(&resp)?;
         assert_eq!(v["answers"]["r"]["type"], "noul");
+        Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Jev single-question contract (POST /v1/noul, /v1/choice, /v1/score)
+// ---------------------------------------------------------------------------
+
+/// Shared Jev request envelope: evaluated facts plus validation schema.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JevRequest {
+    pub estado: serde_json::Value,
+    pub schema: serde_json::Value,
+}
+
+/// Response for POST /v1/noul.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoulResponse {
+    pub decisao: bool,
+    pub confianca: f32,
+}
+
+/// Response for POST /v1/choice.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChoiceResponse {
+    pub escolha: String,
+    pub confianca: f32,
+}
+
+/// Response for POST /v1/score.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoreResponse {
+    pub pontuacao: f32,
+    pub confianca: f32,
 }

@@ -1,0 +1,8 @@
+# Local build tuning.
+#
+# `target-cpu=native` lets the Rust compiler and the `gemm` crate use the host
+# CPU's AVX2/AVX-512/FMA instruction set, which is the single largest CPU
+# inference speed-up after `--release`. It is safe here because the binary is
+# always built and run on the same machine; remove it when cross-compiling.
+[build]
+rustflags = ["-C", "target-cpu=native"]

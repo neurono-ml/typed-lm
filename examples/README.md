@@ -17,7 +17,7 @@ para ancorar as respostas nos fatos de exemplo.
 
 ## Modelos com acesso restrito (gated)
 
-O modelo padrão (`TinyLlama/TinyLlama-1.1B-Chat-v1.0`) é público
+O modelo padrão (`menezesbruno/manaca-1b-base`) é público
 e não precisa de autenticação. Se você trocar para um modelo
 com acesso restrito via `--model-id` (por exemplo
 `recogna-nlp/bode-1b-instruct`), é preciso aceitar as condições

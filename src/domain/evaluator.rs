@@ -1,13 +1,15 @@
 use rig_core::message::{AssistantContent, Message, UserContent};
 use std::collections::HashMap;
 
-use crate::classifier::Classifier;
-use crate::evaluation_error::EvaluationError;
-use crate::jev::{
+#[cfg(test)]
+use crate::api::dtos::Usage;
+use crate::api::dtos::{
     Answer, ChoiceAnswer, Content, NoulAnswer, Question, ScoreAnswer, SystemOneRequest,
-    SystemOneResponse, Usage,
+    SystemOneResponse,
 };
-use crate::model::LanguageModel;
+use crate::api::error::EvaluationError;
+use crate::domain::classifier::Classifier;
+use crate::infrastructure::prompt_template::PromptTemplate;
 
 /// Softmax temperature applied to every answer distribution.
 const SCORING_TEMPERATURE: f32 = 1.0;
@@ -40,6 +42,32 @@ pub fn label_sequence(option_index: usize) -> String {
 /// Builds one answer label per option (`A` through `Z`, then `AA` and beyond).
 pub fn option_labels(option_count: usize) -> Vec<String> {
     (0..option_count).map(label_sequence).collect()
+}
+
+/// Length of the longest token prefix shared by every sequence.
+///
+/// This is the exact number of tokens that can be prefilled once into a
+/// key/value cache and reused across all the sequences (the "single broadcast
+/// prefill" of parallel evaluation). Returns `0` for an empty slice.
+pub fn longest_common_prefix(sequences: &[Vec<u32>]) -> usize {
+    let Some(first) = sequences.first() else {
+        return 0;
+    };
+    let mut shared_length = first.len();
+    for sequence in &sequences[1..] {
+        let mut matching = 0;
+        while matching < shared_length
+            && matching < sequence.len()
+            && first[matching] == sequence[matching]
+        {
+            matching += 1;
+        }
+        shared_length = matching;
+        if shared_length == 0 {
+            break;
+        }
+    }
+    shared_length
 }
 
 /// Calibrates raw label logits into a probability distribution.
@@ -129,6 +157,12 @@ pub fn render_question_text(question: &Question) -> String {
 
 /// Builds the Rig conversation history: the loaded context as preamble and
 /// one user message carrying the evaluated state plus the question text.
+///
+/// Retained as the reference (monolithic) renderer: the production path builds
+/// the prompt through [`PromptTemplate::state_prefix`] and
+/// [`PromptTemplate::question_completion`], and the equivalence between both
+/// renderings is asserted in tests.
+#[allow(dead_code)]
 pub fn build_conversation_history(
     loaded_context: &str,
     state_text: &str,
@@ -143,6 +177,7 @@ pub fn build_conversation_history(
 }
 
 /// Extracts the plain text carried by one Rig message.
+#[allow(dead_code)]
 pub fn message_text(message: &Message) -> String {
     match message {
         Message::System { content } => content.clone(),
@@ -172,7 +207,10 @@ pub fn message_text(message: &Message) -> String {
 }
 
 /// Renders the Rig conversation history into the single prompt evaluated by Candle.
-pub fn render_prompt(history: &[Message]) -> String {
+///
+/// Reference (monolithic) renderer; see [`build_conversation_history`].
+#[allow(dead_code)]
+pub fn render_prompt(history: &[Message], template: PromptTemplate) -> String {
     let mut system_section = String::new();
     let mut user_sections: Vec<String> = Vec::new();
     for message in history {
@@ -189,7 +227,7 @@ pub fn render_prompt(history: &[Message]) -> String {
             }
         }
     }
-    LanguageModel::full_prompt(&system_section, &user_sections.join("\n"))
+    template.full_prompt(&system_section, &user_sections.join("\n"))
 }
 
 fn build_noul_answer(probabilities: &[f32]) -> Answer {
@@ -273,107 +311,10 @@ pub fn label_count_for_question(question: &Question) -> usize {
     }
 }
 
-/// Real evaluator: Rig-orchestrated prompts scored with Candle logits.
-///
-/// The loaded context is fixed at startup; every question clones the
-/// conversation through [`LanguageModel::forward_full`], which builds a fresh
-/// key-value cache per call, so per-request isolation holds by construction.
-pub struct CandleEvaluator<'model_lifetime> {
-    language_model: &'model_lifetime LanguageModel,
-    loaded_context: String,
-    served_model_name: String,
-}
-
-impl<'model_lifetime> CandleEvaluator<'model_lifetime> {
-    pub fn new(
-        language_model: &'model_lifetime LanguageModel,
-        loaded_context: String,
-        served_model_name: String,
-    ) -> Self {
-        Self {
-            language_model,
-            loaded_context,
-            served_model_name,
-        }
-    }
-
-    fn evaluate_single_question(
-        &self,
-        question: &Question,
-        state_text: &str,
-    ) -> Result<(Answer, usize), EvaluationError> {
-        let question_text = render_question_text(question);
-        let history = build_conversation_history(&self.loaded_context, state_text, &question_text);
-        let prompt = render_prompt(&history);
-        let input_tokens = self.language_model.token_count(&prompt, true);
-        let (logits_tensor, _) = self
-            .language_model
-            .forward_full(&prompt)
-            .map_err(EvaluationError::from)?;
-        let labels = option_labels(label_count_for_question(question));
-        let mut logit_values: Vec<f32> = Vec::with_capacity(labels.len());
-        for label in &labels {
-            let token_identifier = self.language_model.label_token_id(label).ok_or_else(|| {
-                EvaluationError::inference(format!(
-                    "answer label '{label}' is not a single vocabulary token"
-                ))
-            })?;
-            let logit_value = self
-                .language_model
-                .token_logit(&logits_tensor, token_identifier)
-                .map_err(EvaluationError::from)?;
-            logit_values.push(logit_value);
-        }
-        let probabilities = calibrate_probabilities(&logit_values);
-        Ok((
-            answer_from_probabilities(question, &probabilities),
-            input_tokens,
-        ))
-    }
-}
-
-impl Evaluator for CandleEvaluator<'_> {
-    fn evaluate(&self, request: &SystemOneRequest) -> Result<SystemOneResponse, EvaluationError> {
-        request
-            .validate()
-            .map_err(EvaluationError::invalid_request)?;
-        if !is_supported_model(&request.model, &self.served_model_name) {
-            return Err(EvaluationError::unknown_model(format!(
-                "model '{}' is not served (serving '{}')",
-                request.model, self.served_model_name
-            )));
-        }
-        let state_text = content_to_text(&request.state);
-        let mut ordered_identifiers: Vec<&String> = request.questions.keys().collect();
-        ordered_identifiers.sort();
-        let mut answers: HashMap<String, Answer> = HashMap::with_capacity(request.questions.len());
-        let mut input_tokens = 0_usize;
-        for identifier in ordered_identifiers {
-            let question = request.questions.get(identifier).ok_or_else(|| {
-                EvaluationError::invalid_request(format!(
-                    "question '{identifier}' disappeared during evaluation"
-                ))
-            })?;
-            let (answer, question_tokens) = self.evaluate_single_question(question, &state_text)?;
-            answers.insert(identifier.clone(), answer);
-            input_tokens = input_tokens.saturating_add(question_tokens);
-        }
-        Ok(SystemOneResponse {
-            model: request.model.clone(),
-            answers,
-            usage: Usage {
-                input_tokens,
-                output_tokens: request.questions.len().saturating_add(1),
-            },
-        })
-    }
-}
-
 /// Predictable test double: returns fixed answers without loading weights.
 ///
-/// API tests depend on this evaluator instead of [`CandleEvaluator`],
-/// keeping CI free of heavy model downloads. It is compiled only for
-/// tests because this is a binary crate: no external target can import it.
+/// API tests depend on this evaluator instead of `CandleEvaluator`,
+/// keeping CI free of heavy model downloads.
 #[cfg(test)]
 pub struct MockEvaluator {
     served_model_name: String,
@@ -463,18 +404,24 @@ impl Evaluator for MockEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::dtos::{Answer, SystemOneRequest};
+    use crate::api::error::EvaluationError;
+    use crate::infrastructure::language_model::LanguageModel;
     use actix_web::ResponseError as _;
     use candle_core::{Device, Tensor};
 
     const EPSILON: f32 = 1e-5;
 
-    fn request_with_model(model: &str, questions: serde_json::Value) -> SystemOneRequest {
+    fn request_with_model(
+        model: &str,
+        questions: serde_json::Value,
+    ) -> anyhow::Result<SystemOneRequest> {
         let raw = serde_json::json!({
             "model": model,
             "state": "charged twice",
             "questions": questions
         });
-        serde_json::from_value(raw).unwrap()
+        Ok(serde_json::from_value(raw)?)
     }
 
     #[test]
@@ -502,20 +449,36 @@ mod tests {
     }
 
     #[test]
-    fn calibration_from_simulated_tensor_sums_to_one() {
+    fn longest_common_prefix_counts_shared_leading_tokens() {
+        let sequences = vec![vec![1, 2, 3, 4], vec![1, 2, 9], vec![1, 2, 3, 0]];
+        assert_eq!(longest_common_prefix(&sequences), 2);
+        assert_eq!(longest_common_prefix(&[vec![7, 7, 7]]), 3);
+        assert_eq!(longest_common_prefix(&[vec![1, 2], vec![3, 4]]), 0);
+        assert_eq!(longest_common_prefix(&[]), 0);
+    }
+
+    #[test]
+    fn longest_common_prefix_handles_nested_sequences() {
+        let sequences = vec![vec![5, 6], vec![5, 6, 7, 8]];
+        assert_eq!(longest_common_prefix(&sequences), 2);
+    }
+
+    #[test]
+    fn calibration_from_simulated_tensor_sums_to_one() -> anyhow::Result<()> {
         let device = Device::Cpu;
         // Simulated last-position logits shaped (1, 3): batch 1, vocabulary 3.
-        let simulated = Tensor::new(vec![vec![2.0f32, 1.0, 0.5]], &device).unwrap();
+        let simulated = Tensor::new(vec![vec![2.0f32, 1.0, 0.5]], &device)?;
         let logit_values = vec![
-            LanguageModel::extract_logit(&simulated, 0).unwrap(),
-            LanguageModel::extract_logit(&simulated, 1).unwrap(),
-            LanguageModel::extract_logit(&simulated, 2).unwrap(),
+            LanguageModel::extract_logit(&simulated, 0)?,
+            LanguageModel::extract_logit(&simulated, 1)?,
+            LanguageModel::extract_logit(&simulated, 2)?,
         ];
         let probabilities = calibrate_probabilities(&logit_values);
         let total: f32 = probabilities.iter().sum();
         assert!((total - 1.0).abs() < EPSILON);
         assert!(probabilities[0] > probabilities[1]);
         assert!(probabilities[1] > probabilities[2]);
+        Ok(())
     }
 
     #[test]
@@ -538,10 +501,52 @@ mod tests {
     #[test]
     fn rendered_prompt_keeps_system_before_user() {
         let history = build_conversation_history("shop rules", "order total", "refund?");
-        let prompt = render_prompt(&history);
-        let system_position = prompt.find("shop rules").unwrap();
-        let user_position = prompt.find("order total").unwrap();
+        let prompt = render_prompt(&history, PromptTemplate::Manaca);
+        let system_position = prompt.find("shop rules").unwrap_or(usize::MAX);
+        let user_position = prompt.find("order total").unwrap_or(usize::MAX);
+        assert_ne!(system_position, usize::MAX);
+        assert_ne!(user_position, usize::MAX);
         assert!(system_position < user_position);
+    }
+
+    #[test]
+    fn rendered_chatml_prompt_embeds_the_context_verbatim() {
+        let context = "Fact 7: The logistics department handles damaged shipments.";
+        let history = build_conversation_history(context, "smashed box", "Who handles it?");
+        let prompt = render_prompt(&history, PromptTemplate::ChatMl);
+        assert!(
+            prompt.contains(context),
+            "the loaded context must appear verbatim in the rendered prompt: {prompt}"
+        );
+        assert!(prompt.starts_with("<|im_start|>system\n"));
+        assert!(prompt.ends_with("<|im_start|>assistant\n"));
+    }
+
+    #[test]
+    fn rendered_manaca_prompt_embeds_the_context_verbatim() {
+        let context = "Fact 4: a double charge is always fully refundable.";
+        let history = build_conversation_history(context, "billed twice", "Refund?");
+        let prompt = render_prompt(&history, PromptTemplate::Manaca);
+        assert!(
+            prompt.contains(context),
+            "the loaded context must appear verbatim in the rendered prompt: {prompt}"
+        );
+    }
+
+    #[test]
+    fn system_prompt_is_a_token_prefix_of_the_full_prompt() {
+        // Absolute prerequisite for prefix reuse: the system prompt (prefilled
+        // once at startup) must be a literal character prefix of every full
+        // prompt, for both templates.
+        for template in [PromptTemplate::Manaca, PromptTemplate::ChatMl] {
+            let context = "loaded memory context";
+            let system = template.system_prompt(context);
+            let full = template.full_prompt(context, "State:\n...\n\nQuestion:\n...");
+            assert!(
+                full.starts_with(&system),
+                "system prompt must prefix the full prompt for prefix reuse"
+            );
+        }
     }
 
     #[test]
@@ -552,21 +557,23 @@ mod tests {
     }
 
     #[test]
-    fn noul_answer_reports_probability_of_first_label() {
+    fn noul_answer_reports_probability_of_first_label() -> anyhow::Result<()> {
         let raw = serde_json::json!({
             "refund": {"type": "noul", "instructions": "Refund?"}
         });
-        let request = request_with_model("jev-latest", raw);
-        let question = request.questions.get("refund").unwrap();
+        let request = request_with_model("jev-latest", raw)?;
+        let missing_question = anyhow::anyhow!("missing question 'refund'");
+        let question = request.questions.get("refund").ok_or(missing_question)?;
         let answer = answer_from_probabilities(question, &[0.8, 0.2]);
         match answer {
             Answer::Noul(noul) => assert!((noul.noul - 0.8).abs() < EPSILON),
             other => panic!("expected noul answer, got {other:?}"),
         }
+        Ok(())
     }
 
     #[test]
-    fn choice_answer_selects_highest_probability_option() {
+    fn choice_answer_selects_highest_probability_option() -> anyhow::Result<()> {
         let raw = serde_json::json!({
             "department": {
                 "type": "choice",
@@ -574,8 +581,12 @@ mod tests {
                 "criteria": {"billing": "Payments", "technical": "Bugs"}
             }
         });
-        let request = request_with_model("jev-latest", raw);
-        let question = request.questions.get("department").unwrap();
+        let request = request_with_model("jev-latest", raw)?;
+        let missing_question = anyhow::anyhow!("missing question 'department'");
+        let question = request
+            .questions
+            .get("department")
+            .ok_or(missing_question)?;
         // Sorted option names are [billing, technical]; favor the second one.
         let answer = answer_from_probabilities(question, &[0.25, 0.75]);
         match answer {
@@ -585,10 +596,11 @@ mod tests {
             }
             other => panic!("expected choice answer, got {other:?}"),
         }
+        Ok(())
     }
 
     #[test]
-    fn score_answer_returns_expected_value_with_legend() {
+    fn score_answer_returns_expected_value_with_legend() -> anyhow::Result<()> {
         let raw = serde_json::json!({
             "urgency": {
                 "type": "score",
@@ -596,8 +608,9 @@ mod tests {
                 "criteria": ["Routine", "Urgent", "Emergency"]
             }
         });
-        let request = request_with_model("jev-latest", raw);
-        let question = request.questions.get("urgency").unwrap();
+        let request = request_with_model("jev-latest", raw)?;
+        let missing_question = anyhow::anyhow!("missing question 'urgency'");
+        let question = request.questions.get("urgency").ok_or(missing_question)?;
         let answer = answer_from_probabilities(question, &[0.0, 0.0, 1.0]);
         match answer {
             Answer::Score(score) => {
@@ -607,10 +620,11 @@ mod tests {
             }
             other => panic!("expected score answer, got {other:?}"),
         }
+        Ok(())
     }
 
     #[test]
-    fn mock_evaluator_answers_every_question_type() {
+    fn mock_evaluator_answers_every_question_type() -> anyhow::Result<()> {
         let evaluator = MockEvaluator::new("manaca-1".to_string());
         let request = request_with_model(
             "manaca-1",
@@ -627,20 +641,24 @@ mod tests {
                     "criteria": ["Routine", "Urgent", "Emergency"]
                 }
             }),
-        );
-        let response = evaluator.evaluate(&request).unwrap();
+        )?;
+        let response = evaluator
+            .evaluate(&request)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         assert_eq!(response.answers.len(), 3);
         assert_eq!(response.usage.output_tokens, 4);
-        match response.answers.get("refund").unwrap() {
+        let missing_answer = anyhow::anyhow!("missing answer 'refund'");
+        match response.answers.get("refund").ok_or(missing_answer)? {
             Answer::Noul(noul) => {
                 assert!((noul.noul - MOCK_NOUL_PROBABILITY).abs() < EPSILON);
             }
             other => panic!("expected noul answer, got {other:?}"),
         }
+        Ok(())
     }
 
     #[test]
-    fn mock_evaluator_rejects_invalid_requests() {
+    fn mock_evaluator_rejects_invalid_requests() -> anyhow::Result<()> {
         let evaluator = MockEvaluator::new("manaca-1".to_string());
         let request = request_with_model(
             "manaca-1",
@@ -649,35 +667,46 @@ mod tests {
                     "type": "choice", "instructions": "Route?", "criteria": {}
                 }
             }),
-        );
-        let error = evaluator.evaluate(&request).unwrap_err();
+        )?;
+        let result = evaluator.evaluate(&request);
+        assert!(result.is_err());
+        let Err(error) = result else {
+            return Ok(());
+        };
         assert_eq!(
             error.status_code(),
             actix_web::http::StatusCode::UNPROCESSABLE_ENTITY
         );
+        Ok(())
     }
 
     #[test]
-    fn mock_evaluator_rejects_unknown_models() {
+    fn mock_evaluator_rejects_unknown_models() -> anyhow::Result<()> {
         let evaluator = MockEvaluator::new("manaca-1".to_string());
         let request = request_with_model(
             "ghost-model",
             serde_json::json!({"refund": {"type": "noul", "instructions": "Refund?"}}),
-        );
-        let error = evaluator.evaluate(&request).unwrap_err();
+        )?;
+        let result = evaluator.evaluate(&request);
+        assert!(result.is_err());
+        let Err(error) = result else {
+            return Ok(());
+        };
         match error {
             EvaluationError::UnknownModel(_) => {}
             other => panic!("expected unknown model error, got {other:?}"),
         }
+        Ok(())
     }
 
     #[test]
-    fn mock_evaluator_accepts_jev_prefixed_models() {
+    fn mock_evaluator_accepts_jev_prefixed_models() -> anyhow::Result<()> {
         let evaluator = MockEvaluator::new("manaca-1".to_string());
         let request = request_with_model(
             "jev-experimental",
             serde_json::json!({"refund": {"type": "noul", "instructions": "Refund?"}}),
-        );
+        )?;
         assert!(evaluator.evaluate(&request).is_ok());
+        Ok(())
     }
 }

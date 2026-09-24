@@ -1,8 +1,8 @@
 use actix_web::{web, HttpResponse};
 
-use crate::jev::{HealthResponse, LiveResponse};
+use crate::api::dtos::{HealthResponse, LiveResponse};
 
-use super::SharedState;
+use crate::api::state::SharedState;
 
 pub(crate) async fn handle_health(shared_state: web::Data<SharedState>) -> HttpResponse {
     HttpResponse::Ok().json(HealthResponse {

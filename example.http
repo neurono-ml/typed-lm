@@ -6,7 +6,7 @@ Content-Type: application/json
 
 {
   "model": "jev-latest",
-  "state": "The customer found a duplicate charge for order #4821 on their credit card. The duplicate charge is 60 days old and they request a full refund of the duplicate.",
+  "state": "The customer found a duplicate charge for order #4821 on their credit card. The duplicate charge is 180 days old and they request a full refund of the duplicate.",
   "questions": {
     "refund_eligible": {
       "type": "noul",

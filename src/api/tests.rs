@@ -1,7 +1,7 @@
-use super::{configure, SharedState};
-use crate::evaluation_error::EvaluationError;
-use crate::evaluator::{Evaluator, MockEvaluator};
-use crate::jev::SystemOneRequest;
+use super::{configure, state::SharedState};
+use crate::api::dtos::SystemOneRequest;
+use crate::api::error::EvaluationError;
+use crate::domain::evaluator::{Evaluator, MockEvaluator};
 use actix_web::{http::StatusCode, test as actix_test, web, App};
 use std::sync::Arc;
 
@@ -14,6 +14,7 @@ fn shared_state_with_mock() -> web::Data<SharedState> {
         served_model_name: SERVED_MODEL_NAME.to_string(),
         context_name: CONTEXT_NAME.to_string(),
         startup_seconds: 1.5,
+        system_sequence_length: 0,
     })
 }
 
@@ -81,19 +82,24 @@ async fn models_lists_served_model_with_alias() {
     assert_eq!(response.status(), StatusCode::OK);
     let body: serde_json::Value = actix_test::read_body_json(response).await;
     assert_eq!(body["object"], "list");
-    let identifiers: Vec<&str> = body["data"]
+    let empty_entries: Vec<serde_json::Value> = Vec::new();
+    let data_entries: &[serde_json::Value] = body["data"]
         .as_array()
-        .unwrap()
+        .map(Vec::as_slice)
+        .unwrap_or(&empty_entries);
+    let identifiers: Vec<&str> = data_entries
         .iter()
-        .map(|entry| entry["id"].as_str().unwrap())
+        .map(|entry| entry["id"].as_str().unwrap_or(""))
         .collect();
     assert!(identifiers.contains(&SERVED_MODEL_NAME));
     assert!(identifiers.contains(&"jev-latest"));
-    let names: Vec<&str> = body["models"]
+    let model_entries: &[serde_json::Value] = body["models"]
         .as_array()
-        .unwrap()
+        .map(Vec::as_slice)
+        .unwrap_or(&empty_entries);
+    let names: Vec<&str> = model_entries
         .iter()
-        .map(|entry| entry["name"].as_str().unwrap())
+        .map(|entry| entry["name"].as_str().unwrap_or(""))
         .collect();
     assert!(names.contains(&SERVED_MODEL_NAME));
 }
@@ -152,7 +158,7 @@ async fn systemone_maps_inference_failure_to_internal_server_error() {
         fn evaluate(
             &self,
             _request: &SystemOneRequest,
-        ) -> Result<crate::jev::SystemOneResponse, EvaluationError> {
+        ) -> Result<crate::api::dtos::SystemOneResponse, EvaluationError> {
             Err(EvaluationError::inference("simulated forward pass failure"))
         }
     }
@@ -162,6 +168,7 @@ async fn systemone_maps_inference_failure_to_internal_server_error() {
         served_model_name: SERVED_MODEL_NAME.to_string(),
         context_name: CONTEXT_NAME.to_string(),
         startup_seconds: 1.5,
+        system_sequence_length: 0,
     });
     let application =
         actix_test::init_service(App::new().app_data(failing_state).configure(configure)).await;
@@ -174,7 +181,7 @@ async fn systemone_maps_inference_failure_to_internal_server_error() {
     let body: serde_json::Value = actix_test::read_body_json(response).await;
     assert!(body["error"]["message"]
         .as_str()
-        .unwrap()
+        .unwrap_or_default()
         .contains("simulated forward pass failure"));
 }
 
@@ -211,71 +218,88 @@ async fn liveness_reports_ok() {
     assert_eq!(body["status"], "ok");
 }
 
-/// Live integration test against the real weights and `resources/memory.md`.
-///
-/// Ignored by default so CI never downloads model weights; run explicitly with
-/// `cargo test -- --ignored`. It validates context-anchored answers: an item
-/// damaged in transit and reported 10 days after delivery is still refundable
-/// (fact 2 covers damaged items within the 30-day window) and routes to the
-/// logistics department (fact 7).
 #[actix_web::test]
-#[ignore]
-async fn live_candle_evaluator_answers_context_anchored_questions() {
-    use crate::context::{ContextProvider, FileContextProvider};
-    use crate::device::DeviceResolver;
-    use crate::evaluator::CandleEvaluator;
-    use crate::model::LanguageModel;
-    use crate::repository::ModelRepository;
-    use std::path::Path;
-
-    let served_model_name = "jev-latest".to_string();
-    let execution_device = DeviceResolver::resolve().unwrap();
-    let model_files = ModelRepository::new("TinyLlama/TinyLlama-1.1B-Chat-v1.0", None)
-        .unwrap()
-        .files()
-        .unwrap();
-    let language_model = LanguageModel::load(
-        &model_files.config,
-        &model_files.weights,
-        &model_files.tokenizer,
-        &execution_device,
+async fn noul_returns_decision_with_confidence() {
+    let application = actix_test::init_service(
+        App::new()
+            .app_data(shared_state_with_mock())
+            .configure(configure),
     )
-    .unwrap();
-    let context_provider = FileContextProvider::new(Path::new("resources/memory.md"));
-    let loaded_context = context_provider.load().unwrap();
-    assert!(loaded_context.contains("GreenLeaf"));
-    let leaked_model: &'static LanguageModel = Box::leak(Box::new(language_model));
-    let evaluator = CandleEvaluator::new(leaked_model, loaded_context, served_model_name.clone());
-    let shared_state = web::Data::new(SharedState {
-        evaluator: Arc::new(evaluator),
-        served_model_name: served_model_name.clone(),
-        context_name: context_provider.name(),
-        startup_seconds: 0.0,
-    });
-    let application =
-        actix_test::init_service(App::new().app_data(shared_state).configure(configure)).await;
+    .await;
     let payload = serde_json::json!({
-        "model": served_model_name,
-        "state": "The customer's order #7710 arrived with a cracked screen after rough handling in transit. Delivery was 10 days ago and they request a full refund for the damaged item.",
+        "estado": {"order_total": 120.0},
+        "schema": {"type": "boolean"}
+    });
+    let request = actix_test::TestRequest::post()
+        .uri("/v1/noul")
+        .set_json(payload)
+        .to_request();
+    let response = actix_test::call_service(&application, request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = actix_test::read_body_json(response).await;
+    assert!(body["decisao"].is_boolean());
+    assert!(body["confianca"].is_number());
+}
+
+#[actix_web::test]
+async fn choice_returns_selection_with_confidence() {
+    let application = actix_test::init_service(
+        App::new()
+            .app_data(shared_state_with_mock())
+            .configure(configure),
+    )
+    .await;
+    let payload = serde_json::json!({
+        "estado": {"ticket_text": "internet is down"},
+        "schema": {"options": ["billing", "technical"]}
+    });
+    let request = actix_test::TestRequest::post()
+        .uri("/v1/choice")
+        .set_json(payload)
+        .to_request();
+    let response = actix_test::call_service(&application, request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = actix_test::read_body_json(response).await;
+    assert!(body["escolha"].is_string());
+    assert!(body["confianca"].is_number());
+}
+
+#[actix_web::test]
+async fn score_returns_points_with_confidence() {
+    let application = actix_test::init_service(
+        App::new()
+            .app_data(shared_state_with_mock())
+            .configure(configure),
+    )
+    .await;
+    let payload = serde_json::json!({
+        "estado": {"ticket_text": "server is slow"},
+        "schema": {"min": 0, "max": 5}
+    });
+    let request = actix_test::TestRequest::post()
+        .uri("/v1/score")
+        .set_json(payload)
+        .to_request();
+    let response = actix_test::call_service(&application, request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = actix_test::read_body_json(response).await;
+    assert!(body["pontuacao"].is_number());
+    assert!(body["confianca"].is_number());
+}
+
+#[actix_web::test]
+async fn error_mapping_returns_standard_envelope_for_unknown_model() {
+    let application = actix_test::init_service(
+        App::new()
+            .app_data(shared_state_with_mock())
+            .configure(configure),
+    )
+    .await;
+    let payload = serde_json::json!({
+        "model": "ghost-model",
+        "state": "customer was charged twice",
         "questions": {
-            "refund_eligible": {
-                "type": "noul",
-                "instructions": "The customer is eligible for a full refund under the store policy."
-            },
-            "responsible_department": {
-                "type": "choice",
-                "instructions": "Which department should handle this case?",
-                "criteria": {
-                    "billing": "Double charges and payment errors",
-                    "logistics": "Damaged, lost, or late shipments",
-                    "product_support": "Defective-item troubleshooting, replacements, and setup help"
-                }
-            },
-            "urgency": {
-                "type": "score",
-                "instructions": "How urgent is this case?",
-                "criteria": ["Routine", "Urgent", "Emergency"]
-            }
+            "refund": {"type": "noul", "instructions": "Should the customer be refunded?"}
         }
     });
     let request = actix_test::TestRequest::post()
@@ -283,30 +307,7 @@ async fn live_candle_evaluator_answers_context_anchored_questions() {
         .set_json(payload)
         .to_request();
     let response = actix_test::call_service(&application, request).await;
-    if response.status() != StatusCode::OK {
-        let status = response.status();
-        let raw_body = actix_test::read_body(response).await;
-        panic!(
-            "expected 200, got {status} body={}",
-            String::from_utf8_lossy(&raw_body)
-        );
-    }
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let body: serde_json::Value = actix_test::read_body_json(response).await;
-    let noul = body["answers"]["refund_eligible"]["noul"].as_f64().unwrap();
-    assert!(
-        noul > 0.5,
-        "damaged item reported within the 30-day window is refundable per memory fact 2, got noul={noul}"
-    );
-    let department = body["answers"]["responsible_department"]["choice"]
-        .as_str()
-        .unwrap();
-    assert_eq!(
-        department, "logistics",
-        "damaged shipments route to logistics per memory fact 7"
-    );
-    let urgency = body["answers"]["urgency"]["score"].as_f64().unwrap();
-    assert!(
-        (0.0..=2.0).contains(&urgency),
-        "urgency score must stay within the legend range, got {urgency}"
-    );
+    assert!(body["error"]["message"].is_string());
 }

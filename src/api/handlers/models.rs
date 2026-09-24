@@ -1,8 +1,8 @@
 use actix_web::{web, HttpResponse};
 
-use crate::jev::{ModelEntry, ModelsResponse, OpenAIModelEntry};
+use crate::api::dtos::{ModelEntry, ModelsResponse, OpenAIModelEntry};
 
-use super::SharedState;
+use crate::api::state::SharedState;
 
 const JEV_LATEST_MODEL_ALIAS: &str = "jev-latest";
 const MODEL_OWNER: &str = "manaca";

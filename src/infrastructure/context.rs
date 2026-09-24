@@ -1,18 +1,18 @@
 use std::path::{Path, PathBuf};
 
-/// Fonte da memória/contexto avaliado junto com cada request.
+/// Source of the memory/context evaluated alongside each request.
 ///
-/// O system prompt fixo foi removido: o contexto agora é carregável e
-/// substituível. Implementações futuras (ex.: RAG sobre vector store do
-/// Rig) trocam o provider sem alterar handlers, evaluator ou API.
+/// The fixed system prompt was removed: the context is now loadable and
+/// replaceable. Future implementations (e.g. RAG over the Rig vector store)
+/// swap the provider without changing handlers, evaluator, or API.
 pub trait ContextProvider: Send + Sync {
-    /// Nome da fonte (para logs e /health).
+    /// Source name (for logs and /health).
     fn name(&self) -> String;
-    /// Carrega o conteúdo integral da memória.
+    /// Loads the full memory contents.
     fn load(&self) -> anyhow::Result<String>;
 }
 
-/// Lê a memória de um arquivo (markdown, texto, etc.).
+/// Reads the memory from a file (markdown, plain text, etc.).
 pub struct FileContextProvider {
     path: PathBuf,
 }
@@ -41,12 +41,13 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn loads_memory_file_contents() {
-        let mut tmp = tempfile_like();
-        writeln!(tmp.0, "# Memória\n- Fato: o céu é azul.").unwrap();
+    fn loads_memory_file_contents() -> anyhow::Result<()> {
+        let mut tmp = tempfile_like()?;
+        writeln!(tmp.0, "# Memory\n- Fact: the sky is blue.")?;
         let provider = FileContextProvider::new(&tmp.1);
-        let content = provider.load().unwrap();
-        assert!(content.contains("o céu é azul"));
+        let content = provider.load()?;
+        assert!(content.contains("the sky is blue"));
+        Ok(())
     }
 
     #[test]
@@ -57,14 +58,14 @@ mod tests {
 
     #[test]
     fn missing_file_is_an_error_not_a_panic() {
-        let provider = FileContextProvider::new(Path::new("nao-existe-12345.md"));
+        let provider = FileContextProvider::new(Path::new("does-not-exist-12345.md"));
         assert!(provider.load().is_err());
     }
 
-    /// Helper mínimo sem nova dependência: arquivo temporário único.
-    fn tempfile_like() -> (std::fs::File, PathBuf) {
+    /// Minimal helper without a new dependency: unique temporary file.
+    fn tempfile_like() -> anyhow::Result<(std::fs::File, PathBuf)> {
         let path = std::env::temp_dir().join(format!("manaca-ctx-{}.md", std::process::id()));
-        let file = std::fs::File::create(&path).unwrap();
-        (file, path)
+        let file = std::fs::File::create(&path)?;
+        Ok((file, path))
     }
 }

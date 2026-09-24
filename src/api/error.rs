@@ -1,7 +1,7 @@
 use actix_web::{http::StatusCode, HttpResponse, ResponseError};
 use std::fmt::{Display, Formatter, Result as FormatResult};
 
-use crate::jev::ErrorBody;
+use crate::api::dtos::ErrorBody;
 
 /// Domain error for the evaluation pipeline.
 ///
