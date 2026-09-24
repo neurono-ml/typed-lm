@@ -41,6 +41,10 @@ pub enum TrainingMethod {
     Lora,
     /// QLoRA adapters over a quantized (dequantized-on-load) base checkpoint.
     QLoRa,
+    /// Full fine-tuning of every parameter from an existing checkpoint.
+    Full,
+    /// Training of every parameter from a randomly initialized model.
+    FromScratch,
 }
 
 impl TrainingMethod {
@@ -49,6 +53,8 @@ impl TrainingMethod {
         match value.to_ascii_lowercase().as_str() {
             "lora" => Some(Self::Lora),
             "qlora" => Some(Self::QLoRa),
+            "full" => Some(Self::Full),
+            "from-scratch" => Some(Self::FromScratch),
             _ => None,
         }
     }
@@ -58,7 +64,19 @@ impl TrainingMethod {
         match self {
             Self::Lora => "lora",
             Self::QLoRa => "qlora",
+            Self::Full => "full",
+            Self::FromScratch => "from-scratch",
         }
+    }
+
+    /// Whether this method produces a saved LoRA/QLoRA adapter.
+    pub fn is_adapter_method(self) -> bool {
+        matches!(self, Self::Lora | Self::QLoRa)
+    }
+
+    /// Whether this method trains every parameter of the model.
+    pub fn trains_all_parameters(self) -> bool {
+        matches!(self, Self::Full | Self::FromScratch)
     }
 }
 
@@ -115,6 +133,45 @@ impl QuantizationMode {
             Self::Training => "training",
         }
     }
+}
+
+/// Explicit model geometry for `--method from-scratch`/`--method full`
+/// when it must not come from a checkpoint `config.json`.
+#[derive(clap::Args, Debug, Clone, Default)]
+pub struct ModelGeometryArguments {
+    /// Architecture family (`llama`, `qwen2`, `qwen3`, `mistral`, `gemma`, `gemma2`, `gemma3`).
+    #[arg(long)]
+    pub architecture: Option<String>,
+    /// Hidden dimension of the model.
+    #[arg(long)]
+    pub hidden_size: Option<usize>,
+    /// Feed-forward intermediate dimension.
+    #[arg(long)]
+    pub intermediate_size: Option<usize>,
+    /// Number of transformer blocks.
+    #[arg(long)]
+    pub num_hidden_layers: Option<usize>,
+    /// Number of query attention heads.
+    #[arg(long)]
+    pub num_attention_heads: Option<usize>,
+    /// Number of key/value attention heads (grouped-query attention).
+    #[arg(long)]
+    pub num_key_value_heads: Option<usize>,
+    /// Vocabulary size.
+    #[arg(long)]
+    pub vocab_size: Option<usize>,
+    /// Maximum supported sequence length.
+    #[arg(long)]
+    pub max_position_embeddings: Option<usize>,
+    /// Rotary embedding base frequency.
+    #[arg(long)]
+    pub rope_theta: Option<f32>,
+    /// Root-mean-square normalization epsilon.
+    #[arg(long)]
+    pub rms_norm_eps: Option<f64>,
+    /// Whether the input and output embeddings share weights.
+    #[arg(long)]
+    pub tie_word_embeddings: Option<bool>,
 }
 
 /// Arguments for the `train` subcommand.
@@ -199,6 +256,18 @@ pub struct TrainArguments {
     /// Execution device: `auto` (CUDA > Metal > CPU), `cpu` or `cuda`.
     #[arg(long, value_enum, default_value = "auto")]
     pub device: TrainerDevice,
+
+    /// Explicit model geometry for full fine-tuning without a checkpoint.
+    #[command(flatten)]
+    pub geometry: ModelGeometryArguments,
+
+    /// Deterministic initialization seed (`--method from-scratch`).
+    #[arg(long, default_value_t = 42)]
+    pub seed: u64,
+
+    /// Optional TOML configuration file; explicit CLI flags take precedence.
+    #[arg(long)]
+    pub configuration_file: Option<PathBuf>,
 }
 
 /// Arguments for the `quantize` subcommand.
@@ -230,7 +299,7 @@ impl TrainArguments {
     pub fn training_method(&self) -> anyhow::Result<TrainingMethod> {
         TrainingMethod::from_flag(&self.method).ok_or_else(|| {
             anyhow::anyhow!(
-                "invalid --method '{}': expected 'lora' or 'qlora'",
+                "invalid --method '{}': expected 'lora', 'qlora', 'full' or 'from-scratch'",
                 self.method
             )
         })
@@ -254,6 +323,12 @@ impl TrainArguments {
                 self.quantization
             )
         })
+    }
+
+    /// Whether the resolved training method needs an explicit model geometry.
+    pub fn requires_geometry(&self) -> anyhow::Result<bool> {
+        let method = self.training_method()?;
+        Ok(method.trains_all_parameters())
     }
 }
 
@@ -329,12 +404,243 @@ mod tests {
             "--dataset",
             "data",
             "--method",
-            "full",
+            "bogus",
         ])?;
         let Command::Train(train) = arguments.command else {
             return Err(anyhow::anyhow!("expected the train subcommand"));
         };
         assert!(train.training_method().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn full_and_from_scratch_methods_round_trip() -> anyhow::Result<()> {
+        let full_arguments = TrainerArguments::try_parse_from([
+            "typed-lm-trainer",
+            "train",
+            "--dataset",
+            "data",
+            "--method",
+            "full",
+        ])?;
+        let Command::Train(full_train) = full_arguments.command else {
+            return Err(anyhow::anyhow!("expected the train subcommand"));
+        };
+        assert_eq!(full_train.training_method()?, TrainingMethod::Full);
+        assert_eq!(full_train.training_method()?.name(), "full");
+        assert!(full_train.training_method()?.trains_all_parameters());
+        assert!(!full_train.training_method()?.is_adapter_method());
+
+        let from_scratch_arguments = TrainerArguments::try_parse_from([
+            "typed-lm-trainer",
+            "train",
+            "--dataset",
+            "data",
+            "--method",
+            "from-scratch",
+        ])?;
+        let Command::Train(from_scratch_train) = from_scratch_arguments.command else {
+            return Err(anyhow::anyhow!("expected the train subcommand"));
+        };
+        assert_eq!(
+            from_scratch_train.training_method()?,
+            TrainingMethod::FromScratch
+        );
+        assert_eq!(from_scratch_train.training_method()?.name(), "from-scratch");
+        assert!(from_scratch_train.training_method()?.trains_all_parameters());
+        assert!(!from_scratch_train.training_method()?.is_adapter_method());
+        Ok(())
+    }
+
+    #[test]
+    fn adapter_methods_are_flagged_as_adapters() -> anyhow::Result<()> {
+        assert!(TrainingMethod::Lora.is_adapter_method());
+        assert!(TrainingMethod::QLoRa.is_adapter_method());
+        assert!(!TrainingMethod::Lora.trains_all_parameters());
+        assert!(!TrainingMethod::QLoRa.trains_all_parameters());
+        assert_eq!(TrainingMethod::from_flag("FULL"), Some(TrainingMethod::Full));
+        assert_eq!(
+            TrainingMethod::from_flag("FROM-SCRATCH"),
+            Some(TrainingMethod::FromScratch)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn configuration_file_flag_is_parsed() -> anyhow::Result<()> {
+        let arguments = TrainerArguments::try_parse_from([
+            "typed-lm-trainer",
+            "train",
+            "--dataset",
+            "data",
+            "--configuration-file",
+            "path.toml",
+        ])?;
+        let Command::Train(train) = arguments.command else {
+            return Err(anyhow::anyhow!("expected the train subcommand"));
+        };
+        assert_eq!(
+            train.configuration_file,
+            Some(PathBuf::from("path.toml"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn seed_flag_defaults_and_parses() -> anyhow::Result<()> {
+        let default_arguments = TrainerArguments::try_parse_from([
+            "typed-lm-trainer",
+            "train",
+            "--dataset",
+            "data",
+        ])?;
+        let Command::Train(default_train) = default_arguments.command else {
+            return Err(anyhow::anyhow!("expected the train subcommand"));
+        };
+        assert_eq!(default_train.seed, 42);
+
+        let seeded_arguments = TrainerArguments::try_parse_from([
+            "typed-lm-trainer",
+            "train",
+            "--dataset",
+            "data",
+            "--seed",
+            "7",
+        ])?;
+        let Command::Train(seeded_train) = seeded_arguments.command else {
+            return Err(anyhow::anyhow!("expected the train subcommand"));
+        };
+        assert_eq!(seeded_train.seed, 7);
+        Ok(())
+    }
+
+    #[test]
+    fn geometry_flags_parse() -> anyhow::Result<()> {
+        let arguments = TrainerArguments::try_parse_from([
+            "typed-lm-trainer",
+            "train",
+            "--dataset",
+            "data",
+            "--architecture",
+            "qwen3",
+            "--hidden-size",
+            "64",
+            "--intermediate-size",
+            "128",
+            "--num-hidden-layers",
+            "4",
+            "--num-attention-heads",
+            "8",
+            "--num-key-value-heads",
+            "2",
+            "--vocab-size",
+            "256",
+            "--max-position-embeddings",
+            "512",
+            "--rope-theta",
+            "10000.0",
+            "--rms-norm-eps",
+            "0.00001",
+            "--tie-word-embeddings",
+            "true",
+        ])?;
+        let Command::Train(train) = arguments.command else {
+            return Err(anyhow::anyhow!("expected the train subcommand"));
+        };
+        let geometry = train.geometry;
+        assert_eq!(geometry.architecture.as_deref(), Some("qwen3"));
+        assert_eq!(geometry.hidden_size, Some(64));
+        assert_eq!(geometry.intermediate_size, Some(128));
+        assert_eq!(geometry.num_hidden_layers, Some(4));
+        assert_eq!(geometry.num_attention_heads, Some(8));
+        assert_eq!(geometry.num_key_value_heads, Some(2));
+        assert_eq!(geometry.vocab_size, Some(256));
+        assert_eq!(geometry.max_position_embeddings, Some(512));
+        assert_eq!(geometry.rope_theta, Some(10000.0));
+        assert_eq!(geometry.rms_norm_eps, Some(0.00001));
+        assert_eq!(geometry.tie_word_embeddings, Some(true));
+        Ok(())
+    }
+
+    #[test]
+    fn geometry_fields_default_to_none() -> anyhow::Result<()> {
+        let arguments = TrainerArguments::try_parse_from([
+            "typed-lm-trainer",
+            "train",
+            "--dataset",
+            "data",
+        ])?;
+        let Command::Train(train) = arguments.command else {
+            return Err(anyhow::anyhow!("expected the train subcommand"));
+        };
+        let geometry = train.geometry;
+        assert!(geometry.architecture.is_none());
+        assert!(geometry.hidden_size.is_none());
+        assert!(geometry.intermediate_size.is_none());
+        assert!(geometry.num_hidden_layers.is_none());
+        assert!(geometry.num_attention_heads.is_none());
+        assert!(geometry.num_key_value_heads.is_none());
+        assert!(geometry.vocab_size.is_none());
+        assert!(geometry.max_position_embeddings.is_none());
+        assert!(geometry.rope_theta.is_none());
+        assert!(geometry.rms_norm_eps.is_none());
+        assert!(geometry.tie_word_embeddings.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn requires_geometry_depends_on_the_method() -> anyhow::Result<()> {
+        let full_arguments = TrainerArguments::try_parse_from([
+            "typed-lm-trainer",
+            "train",
+            "--dataset",
+            "data",
+            "--method",
+            "full",
+        ])?;
+        let Command::Train(full_train) = full_arguments.command else {
+            return Err(anyhow::anyhow!("expected the train subcommand"));
+        };
+        assert!(full_train.requires_geometry()?);
+
+        let from_scratch_arguments = TrainerArguments::try_parse_from([
+            "typed-lm-trainer",
+            "train",
+            "--dataset",
+            "data",
+            "--method",
+            "from-scratch",
+        ])?;
+        let Command::Train(from_scratch_train) = from_scratch_arguments.command else {
+            return Err(anyhow::anyhow!("expected the train subcommand"));
+        };
+        assert!(from_scratch_train.requires_geometry()?);
+
+        let lora_arguments = TrainerArguments::try_parse_from([
+            "typed-lm-trainer",
+            "train",
+            "--dataset",
+            "data",
+            "--method",
+            "lora",
+        ])?;
+        let Command::Train(lora_train) = lora_arguments.command else {
+            return Err(anyhow::anyhow!("expected the train subcommand"));
+        };
+        assert!(!lora_train.requires_geometry()?);
+
+        let qlora_arguments = TrainerArguments::try_parse_from([
+            "typed-lm-trainer",
+            "train",
+            "--dataset",
+            "data",
+            "--method",
+            "qlora",
+        ])?;
+        let Command::Train(qlora_train) = qlora_arguments.command else {
+            return Err(anyhow::anyhow!("expected the train subcommand"));
+        };
+        assert!(!qlora_train.requires_geometry()?);
         Ok(())
     }
 
