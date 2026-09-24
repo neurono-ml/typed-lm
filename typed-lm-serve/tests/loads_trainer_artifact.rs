@@ -14,7 +14,8 @@ use candle_core::{DType, Device, Tensor};
 use typed_lm_common::checkpoint::{ModelReference, WeightKind};
 use typed_lm_common::checkpoint_resolver::LocalCheckpointResolver;
 use typed_lm_common::quantization::{
-    dequantize_checkpoint_tensors, scale_tensor_name, QuantizationConfig, QuantizationScheme,
+    dequantize_checkpoint_tensors, scale_tensor_name, shape_tensor_name, QuantizationConfig,
+    QuantizationScheme,
 };
 
 /// Writes a minimal valid tokenizer so the resolver accepts the directory.
@@ -67,8 +68,18 @@ fn write_quantized_artifact(destination: &Path, scheme: QuantizationScheme) -> a
         }
         QuantizationScheme::Fp4 => {
             let (packed, exponents) = typed_lm_common::quantization::quantize_fp4_mxfp4(&weights)?;
+            let shape: Vec<u32> = weights
+                .dims()
+                .iter()
+                .map(|dimension| *dimension as u32)
+                .collect();
             artifact.insert(name.clone(), packed.to_dtype(DType::U8)?);
             artifact.insert(scale_tensor_name(&name), exponents.to_dtype(DType::U8)?);
+            // The original shape is stored so a 2-D weight round-trips exactly.
+            artifact.insert(
+                shape_tensor_name(&name),
+                Tensor::from_vec(shape, (weights.dims().len(),), &device)?,
+            );
         }
         QuantizationScheme::None => {
             artifact.insert(name.clone(), weights.to_dtype(DType::F32)?);
@@ -125,5 +136,13 @@ fn resolve_accepts_an_fp4_artifact_directory() -> anyhow::Result<()> {
     let tensors = candle_core::safetensors::load(artifact.join("model.safetensors"), &device)?;
     let dense = dequantize_checkpoint_tensors(tensors, QuantizationScheme::Fp4)?;
     assert!(!dense.is_empty());
+    let weight = dense
+        .get("model.embed_tokens.weight")
+        .ok_or_else(|| anyhow::anyhow!("missing dequantized embedding weight"))?;
+    assert_eq!(
+        weight.dims(),
+        &[1, 4],
+        "FP4 must restore the original shape"
+    );
     Ok(())
 }
