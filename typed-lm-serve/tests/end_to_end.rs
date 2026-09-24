@@ -12,6 +12,12 @@
 //!    test drives `GET /health`, `GET /health/live`, `GET /v1/models` and
 //!    `POST /v1/systemone` with all three question types (`noul`/`choice`/`score`).
 //!
+//! A second round trip, `from_scratch_artifact_is_quantized_and_served`, covers
+//! the checkpoint-free path: `train --method from-scratch` initializes a tiny
+//! dense checkpoint from explicit geometry plus a standalone `tokenizer.json`,
+//! `quantize` applies FP8 to it, and the served artifact is exercised the same
+//! way over HTTP.
+//!
 //! The binaries are located through `CARGO_BIN_EXE_*`, which Cargo injects for
 //! integration tests of a crate that itself defines binaries.
 
@@ -322,6 +328,145 @@ fn train_quantize_serve_round_trip_over_http() -> anyhow::Result<()> {
     assert!(score["legend"].is_object());
     assert!(score["probabilities"].is_object());
     assert!(score["confidence"].is_number());
+
+    Ok(())
+}
+
+#[test]
+fn from_scratch_artifact_is_quantized_and_served() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let dataset = directory.path().join("dataset.jsonl");
+    support::write_jev_dataset(&dataset)?;
+
+    // The from-scratch path has no checkpoint, so it needs a standalone
+    // `tokenizer.json`. The support helper writes a full tiny checkpoint; its
+    // tokenizer is reused as the standalone artifact.
+    let reference_checkpoint = directory.path().join("reference-checkpoint");
+    support::write_tiny_checkpoint(&reference_checkpoint)?;
+    let tokenizer_file = directory.path().join("standalone-tokenizer.json");
+    std::fs::copy(
+        reference_checkpoint.join("tokenizer.json"),
+        &tokenizer_file,
+    )?;
+
+    let scratch_directory = directory.path().join("scratch");
+    let quantized_directory = directory.path().join("quantized");
+
+    // 1. Train a complete dense checkpoint from explicit geometry.
+    let train_output = Command::new(trainer_binary()?)
+        .current_dir(directory.path())
+        .arg("train")
+        .arg("--method")
+        .arg("from-scratch")
+        .arg("--architecture")
+        .arg("llama")
+        .arg("--vocab-size")
+        .arg("64")
+        .arg("--hidden-size")
+        .arg("16")
+        .arg("--intermediate-size")
+        .arg("32")
+        .arg("--num-hidden-layers")
+        .arg("1")
+        .arg("--num-attention-heads")
+        .arg("4")
+        .arg("--num-key-value-heads")
+        .arg("2")
+        .arg("--max-position-embeddings")
+        .arg("64")
+        .arg("--tokenizer-file")
+        .arg(&tokenizer_file)
+        .arg("--dataset")
+        .arg(&dataset)
+        .arg("--output-directory")
+        .arg(&scratch_directory)
+        .arg("--max-sequence-length")
+        .arg("32")
+        .arg("--epochs")
+        .arg("1")
+        .arg("--batch-size")
+        .arg("2")
+        .arg("--learning-rate")
+        .arg("1e-2")
+        .output()?;
+    assert!(
+        train_output.status.success(),
+        "from-scratch train failed: {}",
+        String::from_utf8_lossy(&train_output.stderr)
+    );
+    assert!(scratch_directory.join("model.safetensors").exists());
+    assert!(scratch_directory.join("config.json").exists());
+    assert!(scratch_directory.join("tokenizer.json").exists());
+
+    // 2. Quantize the from-scratch checkpoint to FP8.
+    let quantize_output = Command::new(trainer_binary()?)
+        .current_dir(directory.path())
+        .arg("quantize")
+        .arg("--model-id")
+        .arg(&scratch_directory)
+        .arg("--quantization")
+        .arg("fp8")
+        .arg("--output-directory")
+        .arg(&quantized_directory)
+        .output()?;
+    assert!(
+        quantize_output.status.success(),
+        "quantize failed: {}",
+        String::from_utf8_lossy(&quantize_output.stderr)
+    );
+    assert!(quantized_directory.join("model.safetensors").exists());
+    assert!(quantized_directory
+        .join("quantization_config.json")
+        .exists());
+
+    // The quantized directory holds only the weights; copy the config and the
+    // tokenizer next to them so the checkpoint resolves as a complete directory.
+    std::fs::copy(
+        scratch_directory.join("config.json"),
+        quantized_directory.join("config.json"),
+    )?;
+    std::fs::copy(
+        scratch_directory.join("tokenizer.json"),
+        quantized_directory.join("tokenizer.json"),
+    )?;
+
+    // 3. Serve the quantized artifact and evaluate a `noul` question.
+    let host = "127.0.0.1";
+    let port = pick_free_port()?;
+    let mut server = spawn_server(&quantized_directory, port)?;
+    if let Err(error) = wait_for_server(host, port, Duration::from_secs(120)) {
+        let diagnostics = drain_stderr(&mut server);
+        return Err(anyhow::anyhow!("{error}\nserver stderr:\n{diagnostics}"));
+    }
+
+    let request = serde_json::json!({
+        "model": "jev-latest",
+        "state": "charged twice",
+        "questions": {
+            "refund": {"type": "noul", "instructions": "Refund?"}
+        }
+    })
+    .to_string();
+    let (status, body) = http_request(host, port, "POST", "/v1/systemone", Some(&request))?;
+    if status != 200 {
+        let diagnostics = drain_stderr(&mut server);
+        return Err(anyhow::anyhow!(
+            "systemone returned {status}: {body}\nserver stderr:\n{diagnostics}"
+        ));
+    }
+    let response: serde_json::Value = serde_json::from_str(&body)?;
+    let answer = response["answers"]
+        .as_object()
+        .and_then(|answers| answers.get("refund"))
+        .ok_or_else(|| anyhow::anyhow!("missing noul answer: {body}"))?;
+    assert_eq!(answer["type"], "noul");
+    let noul_value = answer["noul"]
+        .as_f64()
+        .ok_or_else(|| anyhow::anyhow!("noul must be numeric: {body}"))?;
+    assert!(
+        (0.0..=1.0).contains(&noul_value),
+        "noul out of range: {noul_value}"
+    );
 
     Ok(())
 }
