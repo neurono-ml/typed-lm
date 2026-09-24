@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use candle_core::{DType, Device};
+use candle_core::DType;
 use candle_nn::VarMap;
 use clap::Parser;
 use typed_lm_common::checkpoint::{ModelArchitecture, ModelReference};
@@ -71,7 +71,7 @@ async fn run_train(arguments: TrainArguments) -> Result<(), TrainerError> {
         ));
     }
 
-    let device = Device::Cpu;
+    let device = arguments.device.resolve()?;
     let reference = ModelReference::resolve(&arguments.model_id);
     let checkpoint = resolve_local_checkpoint(&reference)?;
     tracing::info!(
@@ -180,7 +180,7 @@ async fn run_quantize(arguments: QuantizeArguments) -> Result<(), TrainerError> 
     let scheme = arguments
         .quantization_scheme()
         .map_err(|error| TrainerError::Configuration(error.to_string()))?;
-    let device = Device::Cpu;
+    let device = arguments.device.resolve()?;
     let reference = ModelReference::resolve(&arguments.model_id);
     let checkpoint = resolve_local_checkpoint(&reference)?;
     let frozen_base = FrozenBase::from_checkpoint(&checkpoint, &device)?;

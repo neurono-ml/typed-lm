@@ -378,6 +378,15 @@ pub fn dequantize_checkpoint_tensors(
                     .map(|dimension| *dimension as usize)
                     .collect::<Vec<usize>>()
             });
+        // The F8_E4M3 -> F32 widening cast (and the FP4 bit unpacking) runs on
+        // the host: candle 0.11 ships no CUDA kernel for the low-precision
+        // dtypes, so a GPU-resident checkpoint is staged through the CPU and
+        // the dense result is moved back to the device it arrived on.
+        let target_device = weight.device().clone();
+        let weight = weight.to_device(&Device::Cpu)?;
+        let scale = scale
+            .map(|tensor| tensor.to_device(&Device::Cpu))
+            .transpose()?;
         let dequantized = match scheme {
             QuantizationScheme::Fp8 => match scale {
                 Some(scale) => dequantize_fp8_per_channel(&weight, &scale)?,
@@ -395,7 +404,12 @@ pub fn dequantize_checkpoint_tensors(
             }
             QuantizationScheme::None => weight,
         };
-        output.insert(weight_name, dequantized.to_dtype(DType::F32)?);
+        output.insert(
+            weight_name,
+            dequantized
+                .to_dtype(DType::F32)?
+                .to_device(&target_device)?,
+        );
     }
     Ok(output)
 }

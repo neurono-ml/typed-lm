@@ -8,8 +8,10 @@
 
 use std::path::PathBuf;
 
+use candle_core::Device;
 use clap::{Parser, Subcommand};
 
+use typed_lm_common::device::DeviceResolver;
 use typed_lm_common::quantization::QuantizationScheme;
 
 /// typed-lm-trainer: fine-tune and quantize the served language models.
@@ -56,6 +58,33 @@ impl TrainingMethod {
         match self {
             Self::Lora => "lora",
             Self::QLoRa => "qlora",
+        }
+    }
+}
+
+/// Execution device requested by `--device`.
+///
+/// `auto` keeps the same precedence the server uses (CUDA > Metal > CPU), so a
+/// binary built with the `cuda` feature trains on the GPU without extra flags;
+/// `cpu` and `cuda` pin the choice explicitly (useful for parity checks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum TrainerDevice {
+    /// CUDA when available, otherwise CPU.
+    Auto,
+    /// Force the CPU.
+    Cpu,
+    /// Force the first CUDA device (fails when no GPU is available).
+    Cuda,
+}
+
+impl TrainerDevice {
+    /// Resolves the requested device into a concrete candle device.
+    pub fn resolve(self) -> anyhow::Result<Device> {
+        match self {
+            Self::Cpu => Ok(Device::Cpu),
+            Self::Cuda => Device::new_cuda(0)
+                .map_err(|error| anyhow::anyhow!("failed to open CUDA device 0: {error}")),
+            Self::Auto => DeviceResolver::resolve(),
         }
     }
 }
@@ -166,6 +195,10 @@ pub struct TrainArguments {
     /// When quantization happens: `post-training` or `training`.
     #[arg(long, default_value = "post-training")]
     pub quantization_mode: String,
+
+    /// Execution device: `auto` (CUDA > Metal > CPU), `cpu` or `cuda`.
+    #[arg(long, value_enum, default_value = "auto")]
+    pub device: TrainerDevice,
 }
 
 /// Arguments for the `quantize` subcommand.
@@ -186,6 +219,10 @@ pub struct QuantizeArguments {
     /// Quantization target: `none`, `fp8` or `fp4`.
     #[arg(long, default_value = "fp8")]
     pub quantization: String,
+
+    /// Execution device: `auto` (CUDA > Metal > CPU), `cpu` or `cuda`.
+    #[arg(long, value_enum, default_value = "auto")]
+    pub device: TrainerDevice,
 }
 
 impl TrainArguments {
@@ -252,6 +289,7 @@ mod tests {
         assert_eq!(train.lora_rank, 16);
         assert_eq!(train.epochs, 3);
         assert_eq!(train.quantization_mode()?, QuantizationMode::PostTraining);
+        assert_eq!(train.device, TrainerDevice::Auto);
         Ok(())
     }
 
@@ -309,6 +347,38 @@ mod tests {
         assert_eq!(quantize.quantization, "fp8");
         assert_eq!(quantize.quantization_scheme()?, QuantizationScheme::Fp8);
         assert!(quantize.adapter_directory.is_none());
+        assert_eq!(quantize.device, TrainerDevice::Auto);
+        Ok(())
+    }
+
+    #[test]
+    fn device_flag_is_parsed_for_both_subcommands() -> anyhow::Result<()> {
+        let train_arguments = TrainerArguments::try_parse_from([
+            "typed-lm-trainer",
+            "train",
+            "--dataset",
+            "data",
+            "--device",
+            "cuda",
+        ])?;
+        let Command::Train(train) = train_arguments.command else {
+            return Err(anyhow::anyhow!("expected the train subcommand"));
+        };
+        assert_eq!(train.device, TrainerDevice::Cuda);
+
+        let quantize_arguments =
+            TrainerArguments::try_parse_from(["typed-lm-trainer", "quantize", "--device", "cpu"])?;
+        let Command::Quantize(quantize) = quantize_arguments.command else {
+            return Err(anyhow::anyhow!("expected the quantize subcommand"));
+        };
+        assert_eq!(quantize.device, TrainerDevice::Cpu);
+        Ok(())
+    }
+
+    #[test]
+    fn cpu_device_resolves_without_a_gpu() -> anyhow::Result<()> {
+        let device = TrainerDevice::Cpu.resolve()?;
+        assert!(device.is_cpu());
         Ok(())
     }
 

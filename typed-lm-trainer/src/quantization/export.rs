@@ -85,7 +85,12 @@ pub fn export_quantized(
     let mut tensors: HashMap<String, Tensor> = HashMap::with_capacity(weights.len() * 2);
 
     for (name, weight) in weights {
-        let weight = weight.to_dtype(DType::F32)?;
+        // The quantization arithmetic (F8_E4M3 cast, MXFP4 bit packing) is a
+        // host-side operation: candle has no CUDA kernel for the F8 cast, and
+        // the FP4 path already round-trips through the host. Move the weight to
+        // the CPU, quantize there and keep the artifact CPU-resident — the loader
+        // reads it back onto whatever device the caller selects.
+        let weight = weight.to_device(&Device::Cpu)?.to_dtype(DType::F32)?;
         match scheme {
             QuantizationScheme::None => {
                 tensors.insert(name, weight);
@@ -111,7 +116,7 @@ pub fn export_quantized(
                 tensors.insert(scale_tensor_name(&name), exponents.to_dtype(DType::U8)?);
                 tensors.insert(
                     shape_tensor_name(&name),
-                    Tensor::from_vec(shape, (weight.dims().len(),), weight.device())?,
+                    Tensor::from_vec(shape, (weight.dims().len(),), &Device::Cpu)?,
                 );
             }
         }

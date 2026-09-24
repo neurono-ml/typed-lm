@@ -70,6 +70,7 @@ Flags principais:
 | `--early-stop-patience` | Épocas sem melhora antes de parar (`0` desativa) | `0` |
 | `--quantization` | `none`, `fp8` ou `fp4` | `none` |
 | `--quantization-mode` | `post-training` ou `training` | `post-training` |
+| `--device` | `auto` (CUDA > Metal > CPU), `cpu` ou `cuda` | `auto` |
 
 Saída no `--output-directory`: `adapter.safetensors` + `adapter_config.json`.
 
@@ -106,4 +107,12 @@ cargo test -p typed-lm-trainer -- --ignored   # casos com pesos reais
 ```
 
 Os testes E2E (overfit dummy, export FP8/FP4) rodam em CPU com um checkpoint
-minúsculo em `tests/support/`, sem download.
+minúsculo em `tests/support/`, sem download. O teste live de GPU
+(`tests/live_gpu_e2e.rs`) baixa um checkpoint real, treina LoRA em CUDA e exporta
+FP8:
+
+```bash
+cargo test -p typed-lm-trainer --features cuda --test live_gpu_e2e -- --ignored --nocapture
+```
+
+Documentação detalhada (em inglês) em [`docs/training.md`](../docs/training.md).

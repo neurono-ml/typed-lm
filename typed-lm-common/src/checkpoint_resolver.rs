@@ -349,7 +349,11 @@ fn list_directory_names(directory: &Path) -> anyhow::Result<Vec<String>> {
     let mut names: Vec<String> = Vec::new();
     for entry in std::fs::read_dir(directory)? {
         let entry = entry?;
-        if entry.file_type()?.is_file() {
+        // `DirEntry::file_type` does not follow symlinks, but Hugging Face
+        // snapshot directories are built from symlinks into the blob store, so
+        // the metadata of the path must be inspected instead.
+        let metadata = std::fs::metadata(entry.path());
+        if metadata.map(|value| value.is_file()).unwrap_or(false) {
             if let Some(name) = entry.file_name().to_str() {
                 names.push(name.to_string());
             }
@@ -530,6 +534,39 @@ mod tests {
             path: directory.path().to_path_buf(),
         };
         let resolver = LocalCheckpointResolver::new(directory.path().to_path_buf(), None, None);
+        let checkpoint = resolver.resolve(&reference, None)?;
+        assert_eq!(checkpoint.architecture, ModelArchitecture::Llama);
+        assert_eq!(checkpoint.weight_kind, WeightKind::Dense);
+        assert_eq!(checkpoint.resolved.layout.name(), "safetensors");
+        Ok(())
+    }
+
+    #[test]
+    fn local_directory_follows_snapshot_symlinks() -> anyhow::Result<()> {
+        // Hugging Face snapshot directories hold symlinks into the blob store;
+        // the resolver must follow them instead of discarding the entries.
+        let directory = tempfile::tempdir()?;
+        let blobs = directory.path().join("blobs");
+        std::fs::create_dir_all(&blobs)?;
+        let snapshot = directory.path().join("snapshot");
+        std::fs::create_dir_all(&snapshot)?;
+        std::fs::write(blobs.join("config.json"), br#"{"model_type": "llama"}"#)?;
+        std::fs::write(blobs.join("tokenizer.json"), b"{}")?;
+        write_safetensors(
+            &blobs.join("model.safetensors"),
+            &[("embed.weight", "BF16")],
+        )?;
+        std::os::unix::fs::symlink(blobs.join(CONFIG_NAME), snapshot.join(CONFIG_NAME))?;
+        std::os::unix::fs::symlink(blobs.join(TOKENIZER_NAME), snapshot.join(TOKENIZER_NAME))?;
+        std::os::unix::fs::symlink(
+            blobs.join(SINGLE_SAFETENSORS_NAME),
+            snapshot.join(SINGLE_SAFETENSORS_NAME),
+        )?;
+
+        let reference = ModelReference::Local {
+            path: snapshot.clone(),
+        };
+        let resolver = LocalCheckpointResolver::new(snapshot, None, None);
         let checkpoint = resolver.resolve(&reference, None)?;
         assert_eq!(checkpoint.architecture, ModelArchitecture::Llama);
         assert_eq!(checkpoint.weight_kind, WeightKind::Dense);

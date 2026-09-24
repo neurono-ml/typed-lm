@@ -1,23 +1,28 @@
-//! Shared helpers for the trainer integration tests.
+//! Shared helpers for the serve integration tests.
 //!
-//! These build a tiny Llama checkpoint on disk (config + tokenizer + weights)
-//! and a small Jev-native dataset, so an end-to-end train/quantize run needs no
-//! network access and no real model.
+//! Builds a tiny Llama checkpoint on disk (config + tokenizer + weights) and a
+//! tiny deterministic tokenization, so the binary-level end-to-end test can run
+//! `typed-lm-trainer train`, `typed-lm-trainer quantize` and `typed-lm-serve`
+//! over a real artifact without network access or a real model.
 //!
-//! Each integration test compiles this module separately and uses a subset of
-//! the helpers, so unused-function warnings are expected and suppressed.
+//! Each integration test compiles this module separately and may use only a
+//! subset of the helpers, so unused-function warnings are expected and
+//! suppressed.
 
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use candle_core::{Device, Tensor};
 use tokenizers::models::wordlevel::WordLevelBuilder;
 use tokenizers::pre_tokenizers::whitespace::Whitespace;
 use tokenizers::Tokenizer;
 
-/// Tiny Llama configuration used by every integration test.
+/// Tiny Llama configuration shared with the trainer's dummy checkpoint.
+///
+/// The vocabulary must cover the labels and template markers in
+/// [`write_tokenizer`]; the hidden geometry is kept minimal so a full
+/// train/quantize/serve cycle runs in a fraction of a second.
 pub fn tiny_configuration_json() -> serde_json::Value {
     serde_json::json!({
         "architectures": ["LlamaForCausalLM"],
@@ -111,17 +116,8 @@ pub fn tiny_weights() -> anyhow::Result<HashMap<String, Tensor>> {
 }
 
 /// Writes a tiny word-level tokenizer covering the template markers and labels.
-pub fn write_tokenizer(path: &Path) -> anyhow::Result<()> {
-    write_tokenizer_with_extra(path, &[])
-}
-
-/// Writes the tiny tokenizer plus extra vocabulary entries (index 19 onwards).
-///
-/// Real tokenizers need a handful of literal tokens (the label names, digits)
-/// to render a `choice`/`score` prompt; this keeps the live GGUF test
-/// deterministic without shipping a full vocabulary.
-pub fn write_tokenizer_with_extra(path: &Path, extra_tokens: &[&str]) -> anyhow::Result<()> {
-    let mut vocabulary: Vec<(String, u32)> = vec![
+pub fn write_tokenizer(path: &std::path::Path) -> anyhow::Result<()> {
+    let vocabulary: Vec<(&str, u32)> = vec![
         ("<|system|>", 0),
         ("<|user|>", 1),
         ("<|model|>", 2),
@@ -141,14 +137,11 @@ pub fn write_tokenizer_with_extra(path: &Path, extra_tokens: &[&str]) -> anyhow:
         ("billing", 16),
         ("technical", 17),
         ("[UNK]", 18),
-    ]
-    .into_iter()
-    .map(|(token, identifier)| (token.to_string(), identifier))
-    .collect();
-    for (offset, token) in extra_tokens.iter().enumerate() {
-        vocabulary.push(((*token).to_string(), 19 + offset as u32));
-    }
-    let words: HashMap<String, u32> = vocabulary.into_iter().collect();
+    ];
+    let words: HashMap<String, u32> = vocabulary
+        .iter()
+        .map(|(token, identifier)| (token.to_string(), *identifier))
+        .collect();
     let word_level = WordLevelBuilder::default()
         .vocab(words)
         .unk_token("[UNK]".to_string())
@@ -163,7 +156,7 @@ pub fn write_tokenizer_with_extra(path: &Path, extra_tokens: &[&str]) -> anyhow:
 }
 
 /// Writes a tiny Llama checkpoint (config, tokenizer and weights) into `root`.
-pub fn write_tiny_checkpoint(root: &Path) -> anyhow::Result<()> {
+pub fn write_tiny_checkpoint(root: &std::path::Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(root)?;
     std::fs::write(
         root.join("config.json"),
@@ -175,7 +168,7 @@ pub fn write_tiny_checkpoint(root: &Path) -> anyhow::Result<()> {
 }
 
 /// Writes a small Jev-native JSONL dataset covering all three question types.
-pub fn write_jev_dataset(path: &Path) -> anyhow::Result<()> {
+pub fn write_jev_dataset(path: &std::path::Path) -> anyhow::Result<()> {
     let records = [
         serde_json::json!({
             "state": "charged twice",
