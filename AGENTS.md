@@ -1,24 +1,27 @@
 # Diretrizes para Agentes de IA (AGENTS.md)
 
 ## 1. Contexto do Projeto
-Este projeto é um monorepo Rust de inferência determinística e treino, focado em MLOps (parte do ecossistema Sciencekit). Ele substitui a geração de texto autorregressiva de LLMs tradicionais por uma arquitetura de classificação de passagem única (*single forward pass*), utilizando modelos estilo Llama (ex: Manacá-1B) e Qwen2 (ex: Qwen2.5-1.5B-Instruct, modelo padrão) através do framework Hugging Face `candle`.
+Este projeto é um monorepo Rust de inferência determinística e treino, focado em MLOps (parte do ecossistema Sciencekit). Ele substitui a geração de texto autorregressiva de LLMs tradicionais por uma arquitetura de classificação de passagem única (*single forward pass*), utilizando modelos densos das famílias **Llama, Qwen2, Qwen3, Mistral, Gemma, Gemma2 e Gemma3** (ex: Manacá-1B, Qwen2.5-1.5B-Instruct, modelo padrão), detectadas automaticamente pelo `model_type` do `config.json`, através do framework Hugging Face `candle`. Famílias MoE/MLA (`mixtral`, `qwen3_moe`, `deepseek_v2`, `deepseek_v3`) são rejeitadas com mensagem acionável.
 
-O objetivo é fornecer uma API de latência ultrabaixa para roteamento semântico, estritamente compatível com a especificação da API do **Jev** (TypeSafe AI), além de um treinador LoRA/QLoRA e de quantização (FP8/FP4) cujos artefatos o servidor consome diretamente.
+O objetivo é fornecer uma API de latência ultrabaixa para roteamento semântico, estritamente compatível com a especificação da API do **Jev** (TypeSafe AI), além de um treinador LoRA/QLoRA/full/from-scratch e de quantização (FP8/FP4) cujos artefatos o servidor consome diretamente.
 
 ## 2. Arquitetura e Stack Tecnológico
 *   **Linguagem:** Rust (Edition 2021).
 *   **Workspace:** `typed-lm` com três membros:
-    *   `typed-lm-common` (lib) — contrato Jev, labels, rendering de prompt, detecção de checkpoint, device/dtype (`PrecisionPolicy`), quantização (FP8/FP4), tokenizer.
+    *   `typed-lm-common` (lib) — contrato Jev, labels, rendering de prompt, detecção de checkpoint e de arquitetura, *traits* de arquitetura densa, device/dtype (`PrecisionPolicy`), quantização (FP8/FP4), tokenizer.
     *   `typed-lm-serve` (bin) — servidor Actix; binário **sem subcomando** (flags no topo).
     *   `typed-lm-trainer` (bin+lib) — subcomandos `train` e `quantize`.
 *   **Servidor Web:** `actix-web` com concorrência assíncrona gerenciada pelo `tokio`.
-*   **Motor de Inferência:** `candle-core`, `candle-nn`, `candle-transformers` (arquiteturas `Llama` e `Qwen2`).
+*   **Motor de Inferência:** `candle-core`, `candle-nn`, `candle-transformers`. O forward denso parametrizado cobre as sete famílias densas (Llama, Qwen2, Qwen3, Mistral, Gemma, Gemma2, Gemma3); o caminho GGUF/GGML-quantizado implementa **apenas Qwen2** e rejeita as demais arquiteturas no *load*.
+*   **Métodos de treino (`train`):** `--method lora|qlora|full|from-scratch`. `lora`/`qlora` treinam adaptadores sobre um *checkpoint* congelado; `full` ajusta todos os parâmetros a partir de um *checkpoint*; `from-scratch` inicializa todos os parâmetros aleatoriamente (determinístico por `--seed`). Uma configuração TOML opcional (`--configuration-file`) fornece qualquer parâmetro com precedência **CLI > TOML > default**; `from-scratch` exige geometria explícita (`[model]` ou flags) e um `tokenizer.json` (`[tokenizer] file` ou `--tokenizer-file`).
 *   **Layout de Módulos:**
+    *   `typed-lm-common/src/architecture_traits.rs` — capacidades por família densa (bias de atenção, `head_dim` explícito, *sliding window*, *logit soft-capping*, offset do RMSNorm, escala de *embeddings*, RoPE local).
     *   `typed-lm-serve/src/api/` — DTOs de resposta, erros, rotas e *handlers* do Actix.
     *   `typed-lm-serve/src/domain/` — a *trait* `Evaluator`/`MockEvaluator`.
     *   `typed-lm-serve/src/infrastructure/` — Candle: carregamento de checkpoint, tokenizador, forward paralelo vendorizado e o avaliador real.
     *   `typed-lm-serve/src/config/`, `typed-lm-serve/src/bootstrap/` — CLI e inicialização/servidor.
-    *   `typed-lm-trainer/src/{dataset,model,training,quantization}/` — pipeline de treino e PTQ.
+    *   `typed-lm-trainer/src/{dataset,model,training,quantization}/` — pipeline de treino e PTQ; `model/` inclui `initialization`, `trainable_dense`, `trainable_full`, `trainable_linear` e `trainable_rms_norm`, além dos adaptadores LoRA.
+    *   `typed-lm-trainer/src/configuration_file.rs`, `typed-lm-trainer/src/configuration_resolution.rs` — schema TOML e resolução **CLI > TOML > default**.
 *   **Gerenciamento de Estado:** O modelo, o tokenizador e o `base_cache` (KV-Cache do prompt de sistema) devem ser carregados uma única vez na inicialização da aplicação e compartilhados com os *workers* do `actix-web` através de `actix_web::web::Data`. O cache mutável por requisição deve ser sempre um clone do cache base.
 *   **Formatos suportados:** safetensors (único ou *sharded*), GGUF (denso e GGML-quantizado, ex.: `Q4_K_M`), PyTorch `.pth`/`.bin` e NumPy `.npz`. **FP8 (`F8_E4M3`/`F8_E5M2`) e FP4 (MXFP4) são suportados via dequantização no load** para denso F32; `GPTQ`/`AWQ` são rejeitados com mensagem clara.
 *   **CPU:** atenção *flash* fundida do `candle-nn` é usada automaticamente na CPU (mantém GQA agrupado); `--features mkl` habilita BLAS Intel MKL. GGUF `Q4_K_M` é o modo CPU recomendado.
@@ -45,6 +48,7 @@ Complementam a API: `GET /v1/models`, `GET /health` e `GET /health/live`.
 3.  **Isolamento de Cache:** O `cache_base` nunca deve ser mutado durante uma requisição de usuário. A rota deve clonar o cache, executar o *forward pass* a partir do comprimento da sequência do sistema (`system_sequence_length`) e descartar o clone ao fim do escopo. O cache de sessão (LRU por hash do state) também só guarda e entrega *clones*; o `cache_base` do contexto e cada prefixo retido permanecem imutáveis.
 4.  **Tratamento de Erros:** Não utilize `unwrap()` ou `expect()` no código de produção. Mapeie os erros do Candle e do Actix para uma struct de erro customizada que retorne um `HttpResponse::InternalServerError` padronizado.
 5.  **Proibição Total de `unwrap()`/`expect()` (inclusive em testes):** Nenhum arquivo em `src/` (incluindo `#[cfg(test)]`, mocks, helpers e exemplos internos) pode conter `.unwrap()`, `.expect(`, `.unwrap_err()` ou `.expect_err()`. Métodos que não causam panic (`unwrap_or`, `unwrap_or_else`, `unwrap_or_default`) são permitidos. Em testes, funções devem retornar `anyhow::Result<()>` (ou `Result<_, EvaluationError>`) e propagar com `?`; casos de erro devem ser verificados com `assert!(result.is_err())` + `let Err(error) = result else { return Ok(()); }`, e valores `Option` com `ok_or_else(|| anyhow::anyhow!(...))?` ou `unwrap_or`/`unwrap_or_default`. Valide com `grep -rn "unwrap()\|\.expect(\|unwrap_err" typed-lm-*/src --include="*.rs"` retornando vazio (vale também para `tests/`).
+6.  **Inicialização Determinística (From-Scratch):** A inicialização de pesos de `--method from-scratch` deve ser reproduzível e **sem nova dependência de RNG**: use o gerador LCG/Box-Muller próprio (`typed-lm-trainer/src/model/initialization.rs`), semeável por `--seed`. O mesmo trio `(config, configuration, seed)` deve produzir tensores idênticos byte a byte. `from-scratch` exige geometria explícita (flags `--architecture`/`--hidden-size`/... ou a seção `[model]` do TOML) e um `tokenizer.json` (`--tokenizer-file` ou `[tokenizer] file`), pois não há *checkpoint* de onde lê-los.
 
 ## 5. Diretrizes de Testes (Obrigatório)
 Nenhum código, rota ou função deve ser gerado sem o respectivo teste automatizado. O agente deve assumir a metodologia TDD (Test-Driven Development) nas suas respostas.
