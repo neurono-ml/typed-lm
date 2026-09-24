@@ -93,9 +93,18 @@ impl QuantizationConfig {
 ///
 /// Each row is divided by its absolute maximum before the cast, so the row maps
 /// into the representable E4M3 range. Returns the quantized tensor and the
-/// per-row scales needed to dequantize it.
+/// per-row scales needed to dequantize it. A rank-1 tensor (a normalization
+/// weight, for example) has no rows and shares one scale instead.
 pub fn quantize_fp8_per_channel(weights: &Tensor) -> CandleResult<(Tensor, Tensor)> {
     let weights = weights.to_dtype(DType::F32)?;
+    if weights.rank() < 2 {
+        let absolute_maximum = weights.abs()?.max_all()?;
+        let floor = Tensor::full(1e-12_f32, (), weights.device())?;
+        let scale = absolute_maximum.maximum(&floor)?;
+        let normalized = weights.broadcast_div(&scale)?;
+        let quantized = normalized.to_dtype(DType::F8E4M3)?;
+        return Ok((quantized, scale.reshape((1,))?.to_dtype(DType::F32)?));
+    }
     let rows = weights.dims()[0];
     let absolute_maximum = weights.abs()?.max_keepdim(1)?;
     let floor = Tensor::full(1e-12_f32, absolute_maximum.dims(), weights.device())?;
@@ -108,9 +117,14 @@ pub fn quantize_fp8_per_channel(weights: &Tensor) -> CandleResult<(Tensor, Tenso
 
 /// Dequantizes an FP8 E4M3 tensor back to dense F32.
 ///
-/// `scales` holds one value per row; the result has the original shape.
+/// `scales` holds one value per row (or a single value for a rank-1 tensor);
+/// the result has the original shape.
 pub fn dequantize_fp8_per_channel(quantized: &Tensor, scales: &Tensor) -> CandleResult<Tensor> {
     let dense = quantized.to_dtype(DType::F32)?;
+    if dense.rank() < 2 {
+        let scale = scales.reshape(())?;
+        return dense.broadcast_mul(&scale);
+    }
     let rows = dense.dims()[0];
     let broadcast_scales = scales.reshape((rows, 1))?;
     dense.broadcast_mul(&broadcast_scales)
@@ -408,6 +422,27 @@ mod tests {
             assert!(
                 (original_value - restored_value).abs() <= tolerance,
                 "FP8 round-trip drifted: {original_value} vs {restored_value}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fp8_round_trip_handles_rank_one_weights() -> anyhow::Result<()> {
+        let device = Device::Cpu;
+        // A normalization weight is rank-1 and must use a single shared scale.
+        let weights = Tensor::from_vec(vec![1.0_f32, -2.0, 0.5, 3.0], (4,), &device)?;
+        let (quantized, scales) = quantize_fp8_per_channel(&weights)?;
+        assert_eq!(scales.dims(), &[1]);
+        let restored = dequantize_fp8_per_channel(&quantized, &scales)?;
+        assert_eq!(restored.dims(), &[4]);
+        let original = weights.to_vec1::<f32>()?;
+        let round_tripped = restored.to_vec1::<f32>()?;
+        for (original_value, restored_value) in original.iter().zip(round_tripped.iter()) {
+            let tolerance = original_value.abs().max(1.0) * 0.07;
+            assert!(
+                (original_value - restored_value).abs() <= tolerance,
+                "rank-1 FP8 round-trip drifted: {original_value} vs {restored_value}"
             );
         }
         Ok(())
