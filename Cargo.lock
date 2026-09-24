@@ -4979,6 +4979,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokenizers 0.19.1",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "typed-lm-common",

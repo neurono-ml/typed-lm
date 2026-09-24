@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 
 use candle_core::Device;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 use typed_lm_common::device::DeviceResolver;
 use typed_lm_common::quantization::QuantizationScheme;
@@ -292,6 +292,52 @@ pub struct QuantizeArguments {
     /// Execution device: `auto` (CUDA > Metal > CPU), `cpu` or `cuda`.
     #[arg(long, value_enum, default_value = "auto")]
     pub device: TrainerDevice,
+}
+
+impl TrainerArguments {
+    /// Parses the command line, applies the optional TOML configuration file and
+    /// returns the resolved arguments with **CLI > TOML > default** precedence.
+    ///
+    /// The first pass lets clap parse the raw command line (so `--configuration-file`
+    /// and the subcommand are known); the configuration file is then loaded, and
+    /// [`resolve_train_arguments`](crate::configuration_resolution::resolve_train_arguments)
+    /// fills every field that was not provided explicitly. A malformed or
+    /// unknown-key TOML file is a typed configuration error.
+    pub fn parse_with_configuration() -> anyhow::Result<Self> {
+        let matches = Self::command().get_matches();
+        Self::from_matches_with_configuration(&matches)
+    }
+
+    /// Applies a configuration file to already-parsed matches.
+    ///
+    /// Kept separate from [`Self::parse_with_configuration`] so integration tests
+    /// can drive the resolution from a controlled `ArgMatches` instance.
+    pub fn from_matches_with_configuration(matches: &clap::ArgMatches) -> anyhow::Result<Self> {
+        match matches.subcommand() {
+            Some(("train", train_matches)) => {
+                let configuration = Self::load_configuration_from(train_matches)?;
+                let resolved = crate::configuration_resolution::resolve_train_arguments(
+                    train_matches,
+                    &configuration,
+                )?;
+                Ok(Self {
+                    command: Command::Train(resolved),
+                })
+            }
+            _ => <Self as clap::FromArgMatches>::from_arg_matches(matches)
+                .map_err(|error| anyhow::anyhow!(error)),
+        }
+    }
+
+    /// Loads the TOML file named by `--configuration-file`, if the flag is set.
+    fn load_configuration_from(
+        matches: &clap::ArgMatches,
+    ) -> anyhow::Result<crate::configuration_file::ConfigurationFile> {
+        match matches.get_one::<PathBuf>("configuration_file") {
+            Some(path) => crate::configuration_file::load_configuration_file(path),
+            None => Ok(crate::configuration_file::ConfigurationFile::default()),
+        }
+    }
 }
 
 impl TrainArguments {
@@ -685,6 +731,92 @@ mod tests {
     fn cpu_device_resolves_without_a_gpu() -> anyhow::Result<()> {
         let device = TrainerDevice::Cpu.resolve()?;
         assert!(device.is_cpu());
+        Ok(())
+    }
+
+    #[test]
+    fn a_configuration_file_supplies_absent_values() -> anyhow::Result<()> {
+        use clap::CommandFactory;
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("training.toml");
+        std::fs::write(
+            &path,
+            "[run]\nmethod = \"from-scratch\"\nseed = 7\nepochs = 9\n",
+        )?;
+        let matches = TrainerArguments::command().try_get_matches_from([
+            "typed-lm-trainer",
+            "train",
+            "--dataset",
+            "data",
+            "--configuration-file",
+            path.to_string_lossy().as_ref(),
+        ])?;
+        let resolved = TrainerArguments::from_matches_with_configuration(&matches)?;
+        let Command::Train(train) = resolved.command else {
+            return Err(anyhow::anyhow!("expected the train subcommand"));
+        };
+        assert_eq!(train.method, "from-scratch");
+        assert_eq!(train.seed, 7);
+        assert_eq!(train.epochs, 9);
+        assert_eq!(train.training_method()?, TrainingMethod::FromScratch);
+        Ok(())
+    }
+
+    #[test]
+    fn an_explicit_flag_overrides_the_configuration_file() -> anyhow::Result<()> {
+        use clap::CommandFactory;
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("training.toml");
+        std::fs::write(&path, "[run]\nmethod = \"from-scratch\"\nepochs = 9\n")?;
+        let matches = TrainerArguments::command().try_get_matches_from([
+            "typed-lm-trainer",
+            "train",
+            "--dataset",
+            "data",
+            "--epochs",
+            "2",
+            "--configuration-file",
+            path.to_string_lossy().as_ref(),
+        ])?;
+        let resolved = TrainerArguments::from_matches_with_configuration(&matches)?;
+        let Command::Train(train) = resolved.command else {
+            return Err(anyhow::anyhow!("expected the train subcommand"));
+        };
+        assert_eq!(train.epochs, 2);
+        assert_eq!(train.method, "from-scratch");
+        Ok(())
+    }
+
+    #[test]
+    fn a_broken_configuration_file_is_an_error() -> anyhow::Result<()> {
+        use clap::CommandFactory;
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("broken.toml");
+        std::fs::write(&path, "[run\n")?;
+        let matches = TrainerArguments::command().try_get_matches_from([
+            "typed-lm-trainer",
+            "train",
+            "--dataset",
+            "data",
+            "--configuration-file",
+            path.to_string_lossy().as_ref(),
+        ])?;
+        assert!(TrainerArguments::from_matches_with_configuration(&matches).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn no_configuration_file_keeps_the_defaults() -> anyhow::Result<()> {
+        use clap::CommandFactory;
+        let matches = TrainerArguments::command()
+            .try_get_matches_from(["typed-lm-trainer", "train", "--dataset", "data"])?;
+        let resolved = TrainerArguments::from_matches_with_configuration(&matches)?;
+        let Command::Train(train) = resolved.command else {
+            return Err(anyhow::anyhow!("expected the train subcommand"));
+        };
+        assert_eq!(train.method, "lora");
+        assert_eq!(train.epochs, 3);
+        assert_eq!(train.seed, 42);
         Ok(())
     }
 

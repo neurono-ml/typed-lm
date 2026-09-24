@@ -4,8 +4,9 @@
 //! The crate is intentionally split into small modules (dataset, model,
 //! training, quantization) so each concern stays testable in isolation. This
 //! skeleton declares the module tree; the implementations land in Waves 3-6.
-
 pub mod cli;
+pub mod configuration_file;
+pub mod configuration_resolution;
 pub mod dataset;
 pub mod error;
 pub mod model;
