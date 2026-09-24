@@ -7,10 +7,12 @@
 //! projections are frozen dense weights; only the adapters are `Var`s.
 //!
 //! The module is built directly from a `VarMap` so the adapter variables appear
-//! in [`VarMap::all_vars`] for the optimizer. Qwen2 (which biases q/k/v) lives
-//! in [`crate::model::trainable_qwen2`]; this module covers Llama and, through
-//! the shared `has_query_key_value_bias` flag, is also usable for architectures
-//! without attention biases.
+//! in [`VarMap::all_vars`] for the optimizer. This module covers every dense
+//! family: the per-family variations (attention biases, explicit head dimension,
+//! sliding window, logit soft-capping, RMSNorm unit offset, embedding scale and a
+//! local RoPE base frequency) are driven by [`ParallelModelConfig`].
+//! [`crate::model::trainable_dense`] is the supported entry point that validates
+//! the configuration against the detected architecture first.
 
 use std::collections::HashMap;
 
