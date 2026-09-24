@@ -159,17 +159,27 @@ mod tests {
         let device = Device::Cpu;
         let (_variable_map, builder) = build_builder(&device)?;
         let zeros = Tensor::zeros((4,), DType::F32, &device)?;
-        let offset_norm = TrainableRmsNorm::from_tensor(zeros.clone(), EPSILON, true, &builder, "offset")?;
+        let offset_norm =
+            TrainableRmsNorm::from_tensor(zeros.clone(), EPSILON, true, &builder, "offset")?;
         let plain_norm = TrainableRmsNorm::from_tensor(zeros, EPSILON, false, &builder, "plain")?;
 
         let values = [1.0_f32, 2.0, 3.0, 4.0];
         let input = Tensor::new(&[values], &device)?;
-        let offset_output = offset_norm.forward(&input)?.flatten_all()?.to_vec1::<f32>()?;
-        let plain_output = plain_norm.forward(&input)?.flatten_all()?.to_vec1::<f32>()?;
+        let offset_output = offset_norm
+            .forward(&input)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        let plain_output = plain_norm
+            .forward(&input)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
 
         let mean_square = values.iter().map(|value| value * value).sum::<f32>() / 4.0;
         let denominator = (mean_square + EPSILON as f32).sqrt();
-        for (actual, expected) in offset_output.iter().zip(values.iter().map(|v| v / denominator)) {
+        for (actual, expected) in offset_output
+            .iter()
+            .zip(values.iter().map(|v| v / denominator))
+        {
             assert!(
                 (actual - expected).abs() < 1e-5,
                 "unit offset must normalize as weight one: expected {expected}, got {actual}"

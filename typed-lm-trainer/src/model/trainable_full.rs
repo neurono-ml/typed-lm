@@ -262,13 +262,7 @@ impl TrainableFull {
                 config,
             )?
         };
-        let final_norm = build_norm(
-            source,
-            builder,
-            "model.norm",
-            config.hidden_size,
-            config,
-        )?;
+        let final_norm = build_norm(source, builder, "model.norm", config.hidden_size, config)?;
 
         let attention_scale = match config.query_pre_attention_scalar {
             Some(scalar) => 1.0 / (scalar as f64).sqrt(),
@@ -512,13 +506,41 @@ impl TrainableFull {
                 &format!("{prefix}.post_attention_layernorm.weight"),
                 block.post_attention_norm.weight(),
             );
-            insert_linear(&mut tensors, &format!("{prefix}.self_attn.q_proj"), &block.attention.query_projection);
-            insert_linear(&mut tensors, &format!("{prefix}.self_attn.k_proj"), &block.attention.key_projection);
-            insert_linear(&mut tensors, &format!("{prefix}.self_attn.v_proj"), &block.attention.value_projection);
-            insert_linear(&mut tensors, &format!("{prefix}.self_attn.o_proj"), &block.attention.output_projection);
-            insert_linear(&mut tensors, &format!("{prefix}.mlp.gate_proj"), &block.mlp.gate_projection);
-            insert_linear(&mut tensors, &format!("{prefix}.mlp.up_proj"), &block.mlp.up_projection);
-            insert_linear(&mut tensors, &format!("{prefix}.mlp.down_proj"), &block.mlp.down_projection);
+            insert_linear(
+                &mut tensors,
+                &format!("{prefix}.self_attn.q_proj"),
+                &block.attention.query_projection,
+            );
+            insert_linear(
+                &mut tensors,
+                &format!("{prefix}.self_attn.k_proj"),
+                &block.attention.key_projection,
+            );
+            insert_linear(
+                &mut tensors,
+                &format!("{prefix}.self_attn.v_proj"),
+                &block.attention.value_projection,
+            );
+            insert_linear(
+                &mut tensors,
+                &format!("{prefix}.self_attn.o_proj"),
+                &block.attention.output_projection,
+            );
+            insert_linear(
+                &mut tensors,
+                &format!("{prefix}.mlp.gate_proj"),
+                &block.mlp.gate_projection,
+            );
+            insert_linear(
+                &mut tensors,
+                &format!("{prefix}.mlp.up_proj"),
+                &block.mlp.up_projection,
+            );
+            insert_linear(
+                &mut tensors,
+                &format!("{prefix}.mlp.down_proj"),
+                &block.mlp.down_projection,
+            );
         }
         Ok(tensors)
     }
@@ -561,9 +583,7 @@ fn build_linear(
     if let Some(source) = source {
         let weight = source
             .get(&format!("{prefix}.weight"))
-            .ok_or_else(|| {
-                TrainerError::Model(format!("missing base tensor '{prefix}.weight'"))
-            })?
+            .ok_or_else(|| TrainerError::Model(format!("missing base tensor '{prefix}.weight'")))?
             .to_dtype(DType::F32)?;
         let bias = if with_bias {
             Some(
@@ -667,9 +687,7 @@ fn build_rotary_tables(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::initialization::{
-        initialize_model_tensors, InitializationConfiguration,
-    };
+    use crate::model::initialization::{initialize_model_tensors, InitializationConfiguration};
     use typed_lm_common::architecture_traits::DenseArchitectureTraits;
     use typed_lm_common::checkpoint::ModelArchitecture;
 
@@ -734,12 +752,8 @@ mod tests {
     fn from_initialized_copies_the_tensors() -> anyhow::Result<()> {
         let device = Device::Cpu;
         let config = tiny_config(ModelArchitecture::Llama);
-        let tensors = initialize_model_tensors(
-            &config,
-            &InitializationConfiguration::default(),
-            7,
-            &device,
-        )?;
+        let tensors =
+            initialize_model_tensors(&config, &InitializationConfiguration::default(), 7, &device)?;
         let mut variable_map = VarMap::new();
         let model = TrainableFull::from_initialized(&tensors, &config, &mut variable_map, &device)?;
         let state = model.state_dict()?;
@@ -788,7 +802,11 @@ mod tests {
         for variable in &variables {
             if let Some(gradient) = gradients.get(variable) {
                 with_gradient += 1;
-                assert!(gradient.flatten_all()?.to_vec1::<f32>()?.iter().all(|v| v.is_finite()));
+                assert!(gradient
+                    .flatten_all()?
+                    .to_vec1::<f32>()?
+                    .iter()
+                    .all(|v| v.is_finite()));
             }
         }
         assert!(with_gradient > 0);

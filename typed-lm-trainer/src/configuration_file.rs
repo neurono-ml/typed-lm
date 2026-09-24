@@ -195,13 +195,9 @@ pub fn parse_configuration_file(contents: &str) -> anyhow::Result<ConfigurationF
     parse_configuration_with_path(contents, "<inline>")
 }
 
-fn parse_configuration_with_path(
-    contents: &str,
-    path: &str,
-) -> anyhow::Result<ConfigurationFile> {
-    toml::from_str::<ConfigurationFile>(contents).map_err(|error| {
-        TrainerError::configuration_file(path, error.to_string()).into()
-    })
+fn parse_configuration_with_path(contents: &str, path: &str) -> anyhow::Result<ConfigurationFile> {
+    toml::from_str::<ConfigurationFile>(contents)
+        .map_err(|error| TrainerError::configuration_file(path, error.to_string()).into())
 }
 
 #[cfg(test)]

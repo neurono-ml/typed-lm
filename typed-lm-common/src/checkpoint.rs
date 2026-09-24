@@ -148,9 +148,12 @@ impl ModelArchitecture {
     pub fn has_query_key_value_bias(self) -> bool {
         match self {
             Self::Qwen2 => true,
-            Self::Llama | Self::Qwen3 | Self::Mistral | Self::Gemma | Self::Gemma2 | Self::Gemma3 => {
-                false
-            }
+            Self::Llama
+            | Self::Qwen3
+            | Self::Mistral
+            | Self::Gemma
+            | Self::Gemma2
+            | Self::Gemma3 => false,
         }
     }
 
@@ -700,13 +703,7 @@ mod tests {
         assert_eq!(ModelArchitecture::Gemma.name(), "gemma");
         assert_eq!(ModelArchitecture::Gemma2.name(), "gemma2");
         assert_eq!(ModelArchitecture::Gemma3.name(), "gemma3");
-        assert_eq!(
-            ModelArchitecture::SUPPORTED.len(),
-            ModelArchitecture::SUPPORTED
-                .iter()
-                .map(|architecture| architecture.name())
-                .count()
-        );
+        assert_eq!(ModelArchitecture::SUPPORTED.len(), 7);
         for architecture in ModelArchitecture::SUPPORTED {
             assert_eq!(
                 ModelArchitecture::from_model_type(architecture.name()),

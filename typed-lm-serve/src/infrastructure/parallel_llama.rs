@@ -161,12 +161,9 @@ impl ParallelCache {
             return Ok(mask.clone());
         }
         let mask = match self.sliding_window {
-            Some(window) => build_causal_window_mask(
-                sequence_length,
-                index_position,
-                window,
-                &self.device,
-            )?,
+            Some(window) => {
+                build_causal_window_mask(sequence_length, index_position, window, &self.device)?
+            }
             None => build_causal_mask(sequence_length, index_position, &self.device)?,
         };
         self.masks
@@ -1115,8 +1112,12 @@ mod tests {
             "norm.weight".to_string(),
             Tensor::zeros(hidden, DType::F32, &device)?,
         );
-        let offset_norm =
-            ConfiguredRmsNorm::new(hidden, 1e-6, true, tensor_builder(with_offset, DType::F32, &device).pp("norm"))?;
+        let offset_norm = ConfiguredRmsNorm::new(
+            hidden,
+            1e-6,
+            true,
+            tensor_builder(with_offset, DType::F32, &device).pp("norm"),
+        )?;
 
         let mut without_offset = HashMap::new();
         without_offset.insert(
@@ -1144,9 +1145,7 @@ mod tests {
         Ok(())
     }
 
-    fn tiny_config(
-        extra: serde_json::Value,
-    ) -> anyhow::Result<ParallelModelConfig> {
+    fn tiny_config(extra: serde_json::Value) -> anyhow::Result<ParallelModelConfig> {
         let value = serde_json::json!({
             "model_type": "llama",
             "hidden_size": 8,
@@ -1160,7 +1159,9 @@ mod tests {
             "rope_theta": 10000.0
         });
         let mut config = ParallelModelConfig::from_llama_json(value)?;
-        if let Some(embedding_scale) = extra.get("embedding_scale").and_then(|entry| entry.as_f64())
+        if let Some(embedding_scale) = extra
+            .get("embedding_scale")
+            .and_then(|entry| entry.as_f64())
         {
             config.embedding_scale = Some(embedding_scale);
         }
@@ -1187,26 +1188,52 @@ mod tests {
             .collect();
         weights.insert(
             "model.embed_tokens.weight".to_string(),
-            Tensor::from_vec(
-                embedding_values,
-                (config.vocab_size, hidden),
-                device,
-            )?,
+            Tensor::from_vec(embedding_values, (config.vocab_size, hidden), device)?,
         );
         weights.insert(
             "lm_head.weight".to_string(),
             Tensor::zeros((config.vocab_size, hidden), DType::F32, device)?,
         );
-        weights.insert("model.norm.weight".to_string(), Tensor::ones(hidden, DType::F32, device)?);
-        weights.insert("model.layers.0.input_layernorm.weight".to_string(), Tensor::ones(hidden, DType::F32, device)?);
-        weights.insert("model.layers.0.post_attention_layernorm.weight".to_string(), Tensor::ones(hidden, DType::F32, device)?);
-        weights.insert("model.layers.0.self_attn.q_proj.weight".to_string(), Tensor::zeros((query_size, hidden), DType::F32, device)?);
-        weights.insert("model.layers.0.self_attn.k_proj.weight".to_string(), Tensor::zeros((key_value_size, hidden), DType::F32, device)?);
-        weights.insert("model.layers.0.self_attn.v_proj.weight".to_string(), Tensor::zeros((key_value_size, hidden), DType::F32, device)?);
-        weights.insert("model.layers.0.self_attn.o_proj.weight".to_string(), Tensor::zeros((hidden, query_size), DType::F32, device)?);
-        weights.insert("model.layers.0.mlp.gate_proj.weight".to_string(), Tensor::zeros((config.intermediate_size, hidden), DType::F32, device)?);
-        weights.insert("model.layers.0.mlp.up_proj.weight".to_string(), Tensor::zeros((config.intermediate_size, hidden), DType::F32, device)?);
-        weights.insert("model.layers.0.mlp.down_proj.weight".to_string(), Tensor::zeros((hidden, config.intermediate_size), DType::F32, device)?);
+        weights.insert(
+            "model.norm.weight".to_string(),
+            Tensor::ones(hidden, DType::F32, device)?,
+        );
+        weights.insert(
+            "model.layers.0.input_layernorm.weight".to_string(),
+            Tensor::ones(hidden, DType::F32, device)?,
+        );
+        weights.insert(
+            "model.layers.0.post_attention_layernorm.weight".to_string(),
+            Tensor::ones(hidden, DType::F32, device)?,
+        );
+        weights.insert(
+            "model.layers.0.self_attn.q_proj.weight".to_string(),
+            Tensor::zeros((query_size, hidden), DType::F32, device)?,
+        );
+        weights.insert(
+            "model.layers.0.self_attn.k_proj.weight".to_string(),
+            Tensor::zeros((key_value_size, hidden), DType::F32, device)?,
+        );
+        weights.insert(
+            "model.layers.0.self_attn.v_proj.weight".to_string(),
+            Tensor::zeros((key_value_size, hidden), DType::F32, device)?,
+        );
+        weights.insert(
+            "model.layers.0.self_attn.o_proj.weight".to_string(),
+            Tensor::zeros((hidden, query_size), DType::F32, device)?,
+        );
+        weights.insert(
+            "model.layers.0.mlp.gate_proj.weight".to_string(),
+            Tensor::zeros((config.intermediate_size, hidden), DType::F32, device)?,
+        );
+        weights.insert(
+            "model.layers.0.mlp.up_proj.weight".to_string(),
+            Tensor::zeros((config.intermediate_size, hidden), DType::F32, device)?,
+        );
+        weights.insert(
+            "model.layers.0.mlp.down_proj.weight".to_string(),
+            Tensor::zeros((hidden, config.intermediate_size), DType::F32, device)?,
+        );
         Ok(weights)
     }
 

@@ -26,6 +26,12 @@ pub struct TrainerArguments {
 }
 
 /// Trainer subcommands.
+///
+/// The `Train` variant carries the full training surface (geometry, optimizer,
+/// LoRA and configuration-file flags), so it is larger than `Quantize`; boxing
+/// it would complicate the clap-derived parsing, so the size difference is
+/// accepted here.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Fine-tune a base model with LoRA or QLoRA.
@@ -501,7 +507,9 @@ mod tests {
             TrainingMethod::FromScratch
         );
         assert_eq!(from_scratch_train.training_method()?.name(), "from-scratch");
-        assert!(from_scratch_train.training_method()?.trains_all_parameters());
+        assert!(from_scratch_train
+            .training_method()?
+            .trains_all_parameters());
         assert!(!from_scratch_train.training_method()?.is_adapter_method());
         Ok(())
     }
@@ -512,7 +520,10 @@ mod tests {
         assert!(TrainingMethod::QLoRa.is_adapter_method());
         assert!(!TrainingMethod::Lora.trains_all_parameters());
         assert!(!TrainingMethod::QLoRa.trains_all_parameters());
-        assert_eq!(TrainingMethod::from_flag("FULL"), Some(TrainingMethod::Full));
+        assert_eq!(
+            TrainingMethod::from_flag("FULL"),
+            Some(TrainingMethod::Full)
+        );
         assert_eq!(
             TrainingMethod::from_flag("FROM-SCRATCH"),
             Some(TrainingMethod::FromScratch)
@@ -533,21 +544,14 @@ mod tests {
         let Command::Train(train) = arguments.command else {
             return Err(anyhow::anyhow!("expected the train subcommand"));
         };
-        assert_eq!(
-            train.configuration_file,
-            Some(PathBuf::from("path.toml"))
-        );
+        assert_eq!(train.configuration_file, Some(PathBuf::from("path.toml")));
         Ok(())
     }
 
     #[test]
     fn seed_flag_defaults_and_parses() -> anyhow::Result<()> {
-        let default_arguments = TrainerArguments::try_parse_from([
-            "typed-lm-trainer",
-            "train",
-            "--dataset",
-            "data",
-        ])?;
+        let default_arguments =
+            TrainerArguments::try_parse_from(["typed-lm-trainer", "train", "--dataset", "data"])?;
         let Command::Train(default_train) = default_arguments.command else {
             return Err(anyhow::anyhow!("expected the train subcommand"));
         };
@@ -618,12 +622,8 @@ mod tests {
 
     #[test]
     fn geometry_fields_default_to_none() -> anyhow::Result<()> {
-        let arguments = TrainerArguments::try_parse_from([
-            "typed-lm-trainer",
-            "train",
-            "--dataset",
-            "data",
-        ])?;
+        let arguments =
+            TrainerArguments::try_parse_from(["typed-lm-trainer", "train", "--dataset", "data"])?;
         let Command::Train(train) = arguments.command else {
             return Err(anyhow::anyhow!("expected the train subcommand"));
         };
@@ -816,8 +816,12 @@ mod tests {
     #[test]
     fn no_configuration_file_keeps_the_defaults() -> anyhow::Result<()> {
         use clap::CommandFactory;
-        let matches = TrainerArguments::command()
-            .try_get_matches_from(["typed-lm-trainer", "train", "--dataset", "data"])?;
+        let matches = TrainerArguments::command().try_get_matches_from([
+            "typed-lm-trainer",
+            "train",
+            "--dataset",
+            "data",
+        ])?;
         let resolved = TrainerArguments::from_matches_with_configuration(&matches)?;
         let Command::Train(train) = resolved.command else {
             return Err(anyhow::anyhow!("expected the train subcommand"));

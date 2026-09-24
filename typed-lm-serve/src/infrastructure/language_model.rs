@@ -725,7 +725,9 @@ mod tests {
 
         let directory = tempfile::tempdir()?;
         for (architecture, value) in families {
-            let config_file = directory.path().join(format!("{}.json", architecture.name()));
+            let config_file = directory
+                .path()
+                .join(format!("{}.json", architecture.name()));
             std::fs::write(&config_file, serde_json::to_vec(&value)?)?;
             let config = read_config(&config_file, architecture)?;
             assert_eq!(config.architecture, architecture);

@@ -344,10 +344,7 @@ fn from_scratch_artifact_is_quantized_and_served() -> anyhow::Result<()> {
     let reference_checkpoint = directory.path().join("reference-checkpoint");
     support::write_tiny_checkpoint(&reference_checkpoint)?;
     let tokenizer_file = directory.path().join("standalone-tokenizer.json");
-    std::fs::copy(
-        reference_checkpoint.join("tokenizer.json"),
-        &tokenizer_file,
-    )?;
+    std::fs::copy(reference_checkpoint.join("tokenizer.json"), &tokenizer_file)?;
 
     let scratch_directory = directory.path().join("scratch");
     let quantized_directory = directory.path().join("quantized");

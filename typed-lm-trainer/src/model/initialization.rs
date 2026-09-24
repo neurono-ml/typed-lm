@@ -304,12 +304,14 @@ pub fn initialize_model_tensors(
 /// Validates the shape relationships the initializer relies on.
 fn validate_configuration(config: &ParallelModelConfig) -> anyhow::Result<()> {
     if config.num_attention_heads == 0 {
-        return Err(TrainerError::initialization(
-            "num_attention_heads must be greater than zero",
-        )
-        .into());
+        return Err(
+            TrainerError::initialization("num_attention_heads must be greater than zero").into(),
+        );
     }
-    if config.hidden_size % config.num_attention_heads != 0 {
+    if !config
+        .hidden_size
+        .is_multiple_of(config.num_attention_heads)
+    {
         return Err(TrainerError::initialization(format!(
             "hidden_size ({}) must be divisible by num_attention_heads ({})",
             config.hidden_size, config.num_attention_heads
@@ -317,12 +319,14 @@ fn validate_configuration(config: &ParallelModelConfig) -> anyhow::Result<()> {
         .into());
     }
     if config.num_key_value_heads == 0 {
-        return Err(TrainerError::initialization(
-            "num_key_value_heads must be greater than zero",
-        )
-        .into());
+        return Err(
+            TrainerError::initialization("num_key_value_heads must be greater than zero").into(),
+        );
     }
-    if config.num_attention_heads % config.num_key_value_heads != 0 {
+    if !config
+        .num_attention_heads
+        .is_multiple_of(config.num_key_value_heads)
+    {
         return Err(TrainerError::initialization(format!(
             "num_attention_heads ({}) must be divisible by num_key_value_heads ({})",
             config.num_attention_heads, config.num_key_value_heads
@@ -529,12 +533,8 @@ mod tests {
         let mut config = tiny_config(ModelArchitecture::Llama);
         config.num_attention_heads = 3;
         let device = Device::Cpu;
-        let result = initialize_model_tensors(
-            &config,
-            &InitializationConfiguration::default(),
-            0,
-            &device,
-        );
+        let result =
+            initialize_model_tensors(&config, &InitializationConfiguration::default(), 0, &device);
         assert!(result.is_err());
     }
 }

@@ -151,16 +151,14 @@ fn window_per_layer(config: &ParallelModelConfig) -> Vec<Option<usize>> {
             .map(|index| (index >= config.max_window_layers).then_some(window))
             .collect(),
         ModelArchitecture::Gemma3 => (0..layer_count)
-            .map(|index| {
-                ((index + 1) % GEMMA3_SLIDING_WINDOW_PATTERN != 0).then_some(window)
-            })
+            .map(|index| ((index + 1) % GEMMA3_SLIDING_WINDOW_PATTERN != 0).then_some(window))
             .collect(),
         ModelArchitecture::Mistral | ModelArchitecture::Gemma2 => {
             vec![Some(window); layer_count]
         }
-        ModelArchitecture::Llama
-        | ModelArchitecture::Qwen2
-        | ModelArchitecture::Gemma => vec![None; layer_count],
+        ModelArchitecture::Llama | ModelArchitecture::Qwen2 | ModelArchitecture::Gemma => {
+            vec![None; layer_count]
+        }
     }
 }
 
@@ -382,17 +380,14 @@ impl TrainableLlama {
             blocks.push(block);
         }
 
-        let (global_cos, global_sin) =
-            build_rotary_tables(config, config.rope_theta, device)?;
+        let (global_cos, global_sin) = build_rotary_tables(config, config.rope_theta, device)?;
         let local_tables = match config.rope_local_base_frequency {
             Some(frequency) => Some(build_rotary_tables(config, frequency as f32, device)?),
             None => None,
         };
         for (index, block) in blocks.iter_mut().enumerate() {
             let (cos, sin) = match (&local_tables, windows[index]) {
-                (Some((local_cos, local_sin)), Some(_)) => {
-                    (local_cos.clone(), local_sin.clone())
-                }
+                (Some((local_cos, local_sin)), Some(_)) => (local_cos.clone(), local_sin.clone()),
                 _ => (global_cos.clone(), global_sin.clone()),
             };
             block.attention.cos = cos;
@@ -456,11 +451,8 @@ impl TrainableLlama {
         let head_dimension = config.head_dimension();
         let query_size = head_dimension * config.num_attention_heads;
         let key_value_size = head_dimension * config.num_key_value_heads;
-        let attention_scale = 1.0
-            / (config
-                .query_pre_attention_scalar
-                .unwrap_or(head_dimension) as f64)
-                .sqrt();
+        let attention_scale =
+            1.0 / (config.query_pre_attention_scalar.unwrap_or(head_dimension) as f64).sqrt();
 
         let attention_prefix = format!("{layer_prefix}.self_attn");
         let attention = TrainableAttention {
@@ -1043,7 +1035,10 @@ mod tests {
         let plain_norm = FrozenRmsNorm::from_base(&unit_weight, 1e-5, false)?;
         let offset_norm = FrozenRmsNorm::from_base(&unit_weight, 1e-5, true)?;
 
-        let plain_output = plain_norm.forward(&input)?.flatten_all()?.to_vec1::<f32>()?;
+        let plain_output = plain_norm
+            .forward(&input)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
         let offset_output = offset_norm
             .forward(&input)?
             .flatten_all()?

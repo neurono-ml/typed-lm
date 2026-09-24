@@ -205,7 +205,9 @@ mod tests {
     fn forward_broadcasts_the_bias() -> anyhow::Result<()> {
         let (layer, _variable_map) = build_layer(true)?;
         let device = Device::Cpu;
-        layer.weight().set(&Tensor::zeros((3, 2), candle_core::DType::F32, &device)?)?;
+        layer
+            .weight()
+            .set(&Tensor::zeros((3, 2), candle_core::DType::F32, &device)?)?;
         let bias = layer
             .bias()
             .ok_or_else(|| anyhow::anyhow!("bias must be present"))?;
@@ -223,10 +225,7 @@ mod tests {
         let (layer, _variable_map) = build_layer(false)?;
         let device = Device::Cpu;
         let input = Tensor::new(
-            &[
-                [[1.0_f32, 1.0], [2.0, 0.0]],
-                [[0.0, 1.0], [1.0, 1.0]],
-            ],
+            &[[[1.0_f32, 1.0], [2.0, 0.0]], [[0.0, 1.0], [1.0, 1.0]]],
             &device,
         )?;
         let output = layer.forward(&input)?;

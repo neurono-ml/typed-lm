@@ -79,8 +79,14 @@ async fn run_train(arguments: TrainArguments) -> Result<(), TrainerError> {
 
     let device = arguments.device.resolve()?;
     if method.trains_all_parameters() {
-        return run_train_full_parameter(arguments, method, quantization_mode, training_scheme, &device)
-            .await;
+        return run_train_full_parameter(
+            arguments,
+            method,
+            quantization_mode,
+            training_scheme,
+            &device,
+        )
+        .await;
     }
 
     let reference = ModelReference::resolve(&arguments.model_id);
@@ -304,15 +310,14 @@ fn configuration_from_geometry(
             "--method from-scratch requires --architecture (or a [model] section)".to_string(),
         )
     })?;
-    let architecture = typed_lm_common::checkpoint::ModelArchitecture::from_model_type(
-        architecture_name,
-    )
-    .ok_or_else(|| {
-        TrainerError::Configuration(format!(
-            "unsupported architecture '{architecture_name}': expected one of {}",
-            typed_lm_common::checkpoint::ModelArchitecture::supported_names()
-        ))
-    })?;
+    let architecture =
+        typed_lm_common::checkpoint::ModelArchitecture::from_model_type(architecture_name)
+            .ok_or_else(|| {
+                TrainerError::Configuration(format!(
+                    "unsupported architecture '{architecture_name}': expected one of {}",
+                    typed_lm_common::checkpoint::ModelArchitecture::supported_names()
+                ))
+            })?;
     let required = |value: Option<usize>, flag: &str| -> Result<usize, TrainerError> {
         value.ok_or_else(|| {
             TrainerError::Configuration(format!(
@@ -332,17 +337,11 @@ fn configuration_from_geometry(
         architecture,
         vocab_size: required(geometry.vocab_size, "--vocab-size")?,
         hidden_size,
-        intermediate_size: geometry
-            .intermediate_size
-            .unwrap_or(hidden_size * 4),
+        intermediate_size: geometry.intermediate_size.unwrap_or(hidden_size * 4),
         num_hidden_layers: required(geometry.num_hidden_layers, "--num-hidden-layers")?,
         num_attention_heads,
-        num_key_value_heads: geometry
-            .num_key_value_heads
-            .unwrap_or(num_attention_heads),
-        max_position_embeddings: geometry
-            .max_position_embeddings
-            .unwrap_or(2048),
+        num_key_value_heads: geometry.num_key_value_heads.unwrap_or(num_attention_heads),
+        max_position_embeddings: geometry.max_position_embeddings.unwrap_or(2048),
         rms_norm_eps: geometry.rms_norm_eps.unwrap_or(1e-6),
         rope_theta: geometry.rope_theta.unwrap_or(1000000.0),
         tie_word_embeddings: geometry.tie_word_embeddings.unwrap_or(false),
@@ -368,7 +367,9 @@ fn configuration_from_geometry(
 /// explicitly via `--tokenizer-file` or the `[tokenizer] file` TOML key.
 /// Without it the run cannot build dataset batches and fails with an actionable
 /// configuration error.
-fn resolve_scratch_tokenizer(arguments: &TrainArguments) -> Result<std::path::PathBuf, TrainerError> {
+fn resolve_scratch_tokenizer(
+    arguments: &TrainArguments,
+) -> Result<std::path::PathBuf, TrainerError> {
     arguments.tokenizer_file.clone().ok_or_else(|| {
         TrainerError::Configuration(
             "--method from-scratch requires a tokenizer: pass --tokenizer-file or set \

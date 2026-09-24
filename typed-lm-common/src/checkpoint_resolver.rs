@@ -561,7 +561,8 @@ mod tests {
             let message = error.to_string();
             assert!(message.contains("supported dense architectures"));
             assert!(
-                message.contains("mixture-of-experts") || message.contains("multi-head-latent-attention")
+                message.contains("mixture-of-experts")
+                    || message.contains("multi-head-latent-attention")
             );
         }
         Ok(())

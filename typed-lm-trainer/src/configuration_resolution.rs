@@ -36,8 +36,8 @@ pub fn resolve_train_arguments(
     matches: &ArgMatches,
     configuration: &ConfigurationFile,
 ) -> anyhow::Result<TrainArguments> {
-    let mut arguments =
-        <TrainArguments as clap::FromArgMatches>::from_arg_matches(matches).map_err(|error| {
+    let mut arguments = <TrainArguments as clap::FromArgMatches>::from_arg_matches(matches)
+        .map_err(|error| {
             crate::error::TrainerError::Configuration(format!(
                 "failed to rebuild the train arguments from matches: {error}"
             ))
@@ -170,14 +170,12 @@ pub fn resolve_geometry(
     matches: &ArgMatches,
     model: Option<&ModelSection>,
 ) -> anyhow::Result<ModelGeometryArguments> {
-    let mut geometry =
-        <ModelGeometryArguments as clap::FromArgMatches>::from_arg_matches(matches).map_err(
-            |error| {
-                crate::error::TrainerError::Configuration(format!(
-                    "failed to rebuild the geometry arguments from matches: {error}"
-                ))
-            },
-        )?;
+    let mut geometry = <ModelGeometryArguments as clap::FromArgMatches>::from_arg_matches(matches)
+        .map_err(|error| {
+            crate::error::TrainerError::Configuration(format!(
+                "failed to rebuild the geometry arguments from matches: {error}"
+            ))
+        })?;
     let Some(model) = model else {
         return Ok(geometry);
     };
@@ -499,7 +497,8 @@ mod tests {
     #[test]
     fn toml_geometry_applies_when_the_cli_is_absent() -> anyhow::Result<()> {
         let matches = train_matches(&["typed-lm-trainer", "train", "--dataset", "data"])?;
-        let configuration = configuration("[model]\narchitecture = \"gemma2\"\nhidden_size = 64\n")?;
+        let configuration =
+            configuration("[model]\narchitecture = \"gemma2\"\nhidden_size = 64\n")?;
         let resolved = resolve_train_arguments(&matches, &configuration)?;
         assert_eq!(resolved.geometry.architecture.as_deref(), Some("gemma2"));
         assert_eq!(resolved.geometry.hidden_size, Some(64));

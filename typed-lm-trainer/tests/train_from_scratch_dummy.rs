@@ -90,7 +90,8 @@ fn from_scratch_overfit_reduces_loss_and_saves_a_complete_checkpoint() -> anyhow
 
     // Build the fully-trainable model and train every parameter.
     let mut variable_map = VarMap::new();
-    let model = TrainableFull::from_initialized(&tensors, &configuration, &mut variable_map, &device)?;
+    let model =
+        TrainableFull::from_initialized(&tensors, &configuration, &mut variable_map, &device)?;
     assert!(!model.all_trainable_variables().is_empty());
 
     let loop_configuration = TrainingLoopConfiguration {
@@ -134,7 +135,10 @@ fn from_scratch_overfit_reduces_loss_and_saves_a_complete_checkpoint() -> anyhow
     assert!(output.join("tokenizer.json").exists());
 
     let (reloaded, reloaded_configuration) = load_full_checkpoint(&output, &device)?;
-    assert_eq!(reloaded_configuration.architecture, ModelArchitecture::Llama);
+    assert_eq!(
+        reloaded_configuration.architecture,
+        ModelArchitecture::Llama
+    );
     assert_eq!(reloaded.len(), state.len());
     Ok(())
 }

@@ -187,9 +187,7 @@ mod tests {
         assert!(
             !DenseArchitectureTraits::for_architecture(ModelArchitecture::Llama).attention_bias
         );
-        assert!(
-            DenseArchitectureTraits::for_architecture(ModelArchitecture::Qwen2).attention_bias
-        );
+        assert!(DenseArchitectureTraits::for_architecture(ModelArchitecture::Qwen2).attention_bias);
     }
 
     #[test]
