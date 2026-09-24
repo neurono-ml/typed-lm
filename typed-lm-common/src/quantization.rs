@@ -133,7 +133,7 @@ pub fn quantize_fp4_mxfp4(weights: &Tensor) -> CandleResult<(Tensor, Tensor)> {
     let mut packed = vec![0_u8; flat.len().div_ceil(2)];
     let mut exponents = vec![0_u8; block_count];
 
-    for block_index in 0..block_count {
+    for (block_index, exponent_slot) in exponents.iter_mut().enumerate() {
         let start = block_index * MXFP4_BLOCK_SIZE;
         let end = (start + MXFP4_BLOCK_SIZE).min(flat.len());
         let block = &flat[start..end];
@@ -147,7 +147,7 @@ pub fn quantize_fp4_mxfp4(weights: &Tensor) -> CandleResult<(Tensor, Tensor)> {
             0.0
         };
         let exponent_byte = encode_e8m0_exponent(raw_exponent);
-        exponents[block_index] = exponent_byte;
+        *exponent_slot = exponent_byte;
         let block_scale = pow2(raw_exponent);
         for (offset, value) in block.iter().enumerate() {
             let normalized = if block_scale > 0.0 {
@@ -158,7 +158,7 @@ pub fn quantize_fp4_mxfp4(weights: &Tensor) -> CandleResult<(Tensor, Tensor)> {
             let nibble = encode_e2m1(normalized);
             let absolute_index = start + offset;
             let byte_index = absolute_index / 2;
-            if absolute_index % 2 == 0 {
+            if absolute_index.is_multiple_of(2) {
                 packed[byte_index] = (packed[byte_index] & 0xF0) | nibble;
             } else {
                 packed[byte_index] = (packed[byte_index] & 0x0F) | (nibble << 4);
