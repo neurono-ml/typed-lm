@@ -4,6 +4,8 @@ pub mod checkpoint_resolver;
 pub mod context;
 pub mod device;
 pub mod language_model;
+#[cfg(feature = "mkl")]
+pub mod mkl_f16_shim;
 pub mod model_config;
 pub mod model_repository;
 pub mod parallel_llama;
