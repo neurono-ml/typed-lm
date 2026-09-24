@@ -1,9 +1,16 @@
-[package]
-name = "manaca-typed"
+[workspace]
+resolver = "2"
+members = [
+    "typed-lm-common",
+    "typed-lm-serve",
+    "typed-lm-trainer",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
+[workspace.dependencies]
 anyhow = "1.0"
 candle-core = "0.11.0"
 candle-nn = "0.11.0"
@@ -23,20 +30,6 @@ opentelemetry = "0.27"
 opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic"] }
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-
-[features]
-default = []
-# Accelerators. None of these are enabled by default so the crate always
-# builds on a machine without a CUDA/Metal toolchain. Enable at build time:
-#   cargo build --release --features cuda
-cuda = ["candle-transformers/cuda"]
-cudnn = ["candle-transformers/cudnn"]
-flash-attn = ["candle-transformers/flash-attn"]
-metal = ["candle-transformers/metal"]
-# CPU acceleration (Intel MKL). Also useful on x86 hosts without a GPU.
-mkl = ["candle-transformers/mkl"]
-
-[dev-dependencies]
 tempfile = "3"
 
 [profile.release]
