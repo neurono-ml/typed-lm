@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use candle_core::DType;
 use candle_nn::VarMap;
 use clap::Parser;
-use typed_lm_common::checkpoint::{ModelArchitecture, ModelReference};
+use typed_lm_common::checkpoint::ModelReference;
 use typed_lm_common::checkpoint_resolver::{LoadableCheckpoint, LocalCheckpointResolver};
 use typed_lm_common::model_config::ParallelModelConfig;
 use typed_lm_common::quantization::QuantizationScheme;
@@ -26,8 +26,8 @@ use typed_lm_trainer::dataset::discovery::discover_dataset_files;
 use typed_lm_trainer::dataset::loader::load_records;
 use typed_lm_trainer::dataset::record::expand_records;
 use typed_lm_trainer::error::TrainerError;
-use typed_lm_trainer::model::trainable_llama::{LoRAConfiguration, TrainableLlama};
-use typed_lm_trainer::model::trainable_qwen2;
+use typed_lm_trainer::model::trainable_llama::LoRAConfiguration;
+use typed_lm_trainer::model::trainable_dense;
 use typed_lm_trainer::model::weight_loading::FrozenBase;
 use typed_lm_trainer::quantization::export::{export_quantized, merge_adapter};
 use typed_lm_trainer::training::checkpoint::{save_adapter, AdapterConfiguration};
@@ -112,29 +112,15 @@ async fn run_train(arguments: TrainArguments) -> Result<(), TrainerError> {
     // Attach LoRA adapters over the frozen base.
     let mut variable_map = VarMap::new();
     let lora = LoRAConfiguration::new(arguments.lora_rank, arguments.lora_alpha);
-    // The Qwen2 loader is the biased-projection variant of the dense forward;
-    // every non-Llama dense family shares it until the unified dispatch lands.
-    let model = match configuration.architecture {
-        ModelArchitecture::Llama => TrainableLlama::load(
-            frozen_base.tensors(),
-            &configuration,
-            lora,
-            &mut variable_map,
-            &device,
-        )?,
-        ModelArchitecture::Qwen2
-        | ModelArchitecture::Qwen3
-        | ModelArchitecture::Mistral
-        | ModelArchitecture::Gemma
-        | ModelArchitecture::Gemma2
-        | ModelArchitecture::Gemma3 => trainable_qwen2::load(
-            frozen_base.tensors(),
-            &configuration,
-            lora,
-            &mut variable_map,
-            &device,
-        )?,
-    };
+    // The unified dense loader validates the configuration against the detected
+    // architecture and delegates to the shared differentiable forward.
+    let model = trainable_dense::load(
+        frozen_base.tensors(),
+        &configuration,
+        lora,
+        &mut variable_map,
+        &device,
+    )?;
 
     let loop_configuration = TrainingLoopConfiguration {
         epochs: arguments.epochs,
