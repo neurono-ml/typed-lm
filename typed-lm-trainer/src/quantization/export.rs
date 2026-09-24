@@ -19,7 +19,8 @@ use std::path::{Path, PathBuf};
 
 use candle_core::{DType, Device, Tensor};
 use typed_lm_common::quantization::{
-    dequantize, quantize, scale_tensor_name, QuantizationConfig, QuantizationScheme,
+    dequantize_checkpoint_tensors, quantize, scale_tensor_name, shape_tensor_name,
+    QuantizationConfig, QuantizationScheme,
 };
 
 use crate::error::TrainerError;
@@ -95,11 +96,23 @@ pub fn export_quantized(
                 tensors.insert(scale_tensor_name(&name), scales);
             }
             QuantizationScheme::Fp4 => {
+                let shape: Vec<u32> = weight
+                    .dims()
+                    .iter()
+                    .map(|dimension| *dimension as u32)
+                    .collect();
                 let (packed, exponents) = quantize(&configuration, &weight)?;
                 // Candle cannot serialize F4/F8E8M0, so the packed nibbles and
-                // the exponents are stored as U8 with the `_scale` suffix.
+                // the exponents are stored as U8 with the `_scale` suffix. The
+                // original shape is stored alongside because the packed tensor
+                // is flat and cannot recover a 2-D weight on its own (and the
+                // last byte pads an odd element count).
                 tensors.insert(name.clone(), packed.to_dtype(DType::U8)?);
                 tensors.insert(scale_tensor_name(&name), exponents.to_dtype(DType::U8)?);
+                tensors.insert(
+                    shape_tensor_name(&name),
+                    Tensor::from_vec(shape, (weight.dims().len(),), weight.device())?,
+                );
             }
         }
     }
@@ -130,28 +143,8 @@ pub fn load_quantized(
     if configuration.scheme == QuantizationScheme::None {
         return Ok(tensors);
     }
-    let mut dense: HashMap<String, Tensor> = HashMap::with_capacity(tensors.len());
-    for (name, tensor) in &tensors {
-        if name.ends_with("_scale") {
-            continue;
-        }
-        let scale = tensors.get(&scale_tensor_name(name)).ok_or_else(|| {
-            TrainerError::Quantization(format!(
-                "quantized weight '{name}' is missing its scale tensor"
-            ))
-        })?;
-        let element_count = weight_element_count(tensor)?;
-        let restored = dequantize(&configuration, tensor, scale, element_count)?;
-        dense.insert(name.clone(), restored.to_dtype(DType::F32)?);
-    }
+    let dense = dequantize_checkpoint_tensors(tensors, configuration.scheme)?;
     Ok(dense)
-}
-
-/// Element count of a stored weight (halved for packed FP4 bytes).
-fn weight_element_count(tensor: &Tensor) -> anyhow::Result<usize> {
-    // `dequantize` for FP4 expects the *original* element count, i.e. two
-    // nibbles per stored byte.
-    Ok(tensor.elem_count() * 2)
 }
 
 #[cfg(test)]

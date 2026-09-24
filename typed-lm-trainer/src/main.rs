@@ -59,12 +59,15 @@ async fn run_train(arguments: TrainArguments) -> Result<(), TrainerError> {
     let training_scheme = arguments
         .quantization_scheme()
         .map_err(|error| TrainerError::Configuration(error.to_string()))?;
-    if quantization_mode == QuantizationMode::PostTraining
-        && training_scheme != QuantizationScheme::None
+    // `--quantization-mode training` keeps the base quantized during training,
+    // so it only makes sense together with a low-precision scheme. In
+    // `post-training` mode (`--quantization` set) the merged adapter is
+    // quantized at the end of the run, and `none` simply skips that step.
+    if quantization_mode == QuantizationMode::Training
+        && training_scheme == QuantizationScheme::None
     {
         return Err(TrainerError::Configuration(
-            "--quantization requires --quantization-mode training; use `quantize` for post-training"
-                .to_string(),
+            "--quantization-mode training requires --quantization fp8 or fp4".to_string(),
         ));
     }
 

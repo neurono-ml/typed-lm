@@ -6,8 +6,8 @@ use crate::api::dtos::ErrorBody;
 /// Domain error for the evaluation pipeline.
 ///
 /// Each variant maps to an HTTP status code through [`ResponseError`]:
-/// invalid requests and unknown models are client errors (422),
-/// while inference failures are server errors (500).
+/// invalid requests are `422`, unknown models are `404` and inference
+/// failures are server errors (`500`).
 #[derive(Debug)]
 pub enum EvaluationError {
     InvalidRequest(String),
@@ -70,7 +70,8 @@ impl From<anyhow::Error> for EvaluationError {
 impl ResponseError for EvaluationError {
     fn status_code(&self) -> StatusCode {
         match self {
-            Self::InvalidRequest(_) | Self::UnknownModel(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::InvalidRequest(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::UnknownModel(_) => StatusCode::NOT_FOUND,
             Self::Inference(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -91,9 +92,9 @@ mod tests {
     }
 
     #[test]
-    fn unknown_model_maps_to_unprocessable_entity() {
+    fn unknown_model_maps_to_not_found() {
         let error = EvaluationError::unknown_model("model 'ghost' is not served");
-        assert_eq!(error.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(error.status_code(), StatusCode::NOT_FOUND);
     }
 
     #[test]
@@ -106,7 +107,7 @@ mod tests {
     fn error_response_carries_standard_json_envelope() {
         let error = EvaluationError::unknown_model("model 'ghost' is not served");
         let response = error.error_response();
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]

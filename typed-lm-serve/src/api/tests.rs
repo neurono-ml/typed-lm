@@ -307,7 +307,7 @@ async fn error_mapping_returns_standard_envelope_for_unknown_model() {
         .set_json(payload)
         .to_request();
     let response = actix_test::call_service(&application, request).await;
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let body: serde_json::Value = actix_test::read_body_json(response).await;
     assert!(body["error"]["message"].is_string());
 }

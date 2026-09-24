@@ -189,13 +189,16 @@ pub fn quantize_fp4_mxfp4(weights: &Tensor) -> CandleResult<(Tensor, Tensor)> {
 
 /// Dequantizes an MXFP4 tensor back to dense F32.
 ///
-/// `element_count` is the number of original weights (needed because the last
-/// byte may hold padding when the count is odd).
+/// `original_shape` is the shape of the weight before quantization; the result
+/// has exactly that shape and element count. The shape is required because the
+/// packed nibbles are stored flat and, with an odd element count, the last byte
+/// carries one padding nibble.
 pub fn dequantize_fp4_mxfp4(
     packed: &Tensor,
     exponents: &Tensor,
-    element_count: usize,
+    original_shape: &[usize],
 ) -> CandleResult<Tensor> {
+    let element_count: usize = original_shape.iter().product();
     let packed_bytes = packed.flatten_all()?.to_vec1::<u8>()?;
     let exponent_bytes = exponents.flatten_all()?.to_vec1::<u8>()?;
     let mut output = Vec::with_capacity(element_count);
@@ -212,7 +215,7 @@ pub fn dequantize_fp4_mxfp4(
         let block_scale = decode_e8m0_exponent(exponent_byte);
         output.push(decode_e2m1(nibble) * block_scale);
     }
-    Tensor::from_vec(output, (element_count,), packed.device())
+    Tensor::from_vec(output, original_shape, packed.device())
 }
 
 /// 2 raised to `exponent` (exact for the FP4 block scale by construction).
@@ -263,17 +266,19 @@ fn decode_e2m1(nibble: u8) -> f32 {
 ///
 /// For FP8 the input is the E4M3 tensor and `auxiliary` its per-row scales;
 /// for FP4 the input is the packed nibbles and `auxiliary` the block exponents.
+/// `original_shape` is the weight shape before quantization (FP4 needs it to
+/// restore the exact shape and, with an odd count, drop the padding nibble).
 pub fn dequantize(
     config: &QuantizationConfig,
     quantized: &Tensor,
     auxiliary: &Tensor,
-    element_count: usize,
+    original_shape: &[usize],
 ) -> anyhow::Result<Tensor> {
     match config.scheme {
         QuantizationScheme::None => Ok(quantized.clone()),
         QuantizationScheme::Fp8 => dequantize_fp8_per_channel(quantized, auxiliary)
             .map_err(|error| anyhow::anyhow!("failed to dequantize FP8 weights: {error}")),
-        QuantizationScheme::Fp4 => dequantize_fp4_mxfp4(quantized, auxiliary, element_count)
+        QuantizationScheme::Fp4 => dequantize_fp4_mxfp4(quantized, auxiliary, original_shape)
             .map_err(|error| anyhow::anyhow!("failed to dequantize FP4 weights: {error}")),
     }
 }
@@ -313,6 +318,23 @@ pub fn scale_tensor_name(weight_name: &str) -> String {
     format!("{weight_name}_scale")
 }
 
+/// Name of the tensor recording a weight's original (pre-quantization) shape.
+///
+/// FP4 stores the packed nibbles flat, so the original shape cannot be
+/// recovered from the stored tensor; the export writes it as a `U32` tensor
+/// `model.layers.0.proj.weight_shape` and the loader reads it back.
+pub fn shape_tensor_name(weight_name: &str) -> String {
+    format!("{weight_name}_shape")
+}
+
+/// Whether a stored tensor name is quantization metadata, not a weight.
+///
+/// Metadata tensors (`*_scale`, `*_shape`) pair with a weight and are consumed
+/// during dequantization; they must never leak into the model weights.
+pub fn is_quantization_metadata(name: &str) -> bool {
+    name.ends_with("_scale") || name.ends_with("_shape")
+}
+
 /// Dequantizes every weight of a checkpoint tensor map to dense F32.
 ///
 /// The scheme is homogeneous across the checkpoint (that is what the trainer
@@ -322,11 +344,12 @@ pub fn scale_tensor_name(weight_name: &str) -> String {
 ///   channel). A missing scale leaves the raw E4M3 value widened to F32.
 /// - `Fp4` — each weight holds packed E2M1 nibbles (two per byte) and its
 ///   paired `*_scale` tensor holds the E8M0 block exponents; a missing scale is
-///   an error, because the block scale cannot be reconstructed.
+///   an error, because the block scale cannot be reconstructed. The paired
+///   `*_shape` tensor (when present) restores the original weight shape.
 /// - `None` — the map is returned unchanged.
 ///
-/// Paired scale tensors are consumed by the dequantization, so they never leak
-/// into the model weights handed to the variable builder.
+/// Paired metadata tensors are consumed by the dequantization, so they never
+/// leak into the model weights handed to the variable builder.
 pub fn dequantize_checkpoint_tensors(
     mut tensors: HashMap<String, Tensor>,
     scheme: QuantizationScheme,
@@ -336,7 +359,7 @@ pub fn dequantize_checkpoint_tensors(
     }
     let weight_names: Vec<String> = tensors
         .keys()
-        .filter(|name| !name.ends_with("_scale"))
+        .filter(|name| !is_quantization_metadata(name))
         .cloned()
         .collect();
     let mut output = HashMap::with_capacity(weight_names.len());
@@ -345,6 +368,16 @@ pub fn dequantize_checkpoint_tensors(
             continue;
         };
         let scale = tensors.remove(&scale_tensor_name(&weight_name));
+        let original_shape = tensors
+            .remove(&shape_tensor_name(&weight_name))
+            .map(|shape| shape.to_vec1::<u32>())
+            .transpose()?
+            .map(|dimensions| {
+                dimensions
+                    .iter()
+                    .map(|dimension| *dimension as usize)
+                    .collect::<Vec<usize>>()
+            });
         let dequantized = match scheme {
             QuantizationScheme::Fp8 => match scale {
                 Some(scale) => dequantize_fp8_per_channel(&weight, &scale)?,
@@ -357,8 +390,8 @@ pub fn dequantize_checkpoint_tensors(
                         scale_tensor_name(&weight_name)
                     )
                 })?;
-                let element_count = weight.elem_count().saturating_mul(2);
-                dequantize_fp4_mxfp4(&weight, &scale, element_count)?
+                let shape = original_shape.unwrap_or_else(|| vec![weight.elem_count() * 2]);
+                dequantize_fp4_mxfp4(&weight, &scale, &shape)?
             }
             QuantizationScheme::None => weight,
         };
@@ -457,7 +490,7 @@ mod tests {
         let (packed, exponents) = quantize_fp4_mxfp4(&weights)?;
         assert_eq!(exponents.dims(), &[2]);
         assert_eq!(packed.dims(), &[32]);
-        let restored = dequantize_fp4_mxfp4(&packed, &exponents, values.len())?;
+        let restored = dequantize_fp4_mxfp4(&packed, &exponents, &[64])?;
         assert_eq!(restored.dims(), &[64]);
         let round_tripped = restored.to_vec1::<f32>()?;
         // E2M1 has coarse steps; allow the block's representable precision.
@@ -478,7 +511,7 @@ mod tests {
         let (packed, exponents) = quantize_fp4_mxfp4(&weights)?;
         assert_eq!(packed.dims(), &[17]);
         assert_eq!(exponents.dims(), &[2]);
-        let restored = dequantize_fp4_mxfp4(&packed, &exponents, 33)?;
+        let restored = dequantize_fp4_mxfp4(&packed, &exponents, &[33])?;
         assert_eq!(restored.dims(), &[33]);
         Ok(())
     }
@@ -513,8 +546,7 @@ mod tests {
         let weights = Tensor::new(vec![vec![1.0_f32, 2.0, -3.0]], &device)?;
         let config = QuantizationConfig::new(QuantizationScheme::Fp8);
         let (quantized, auxiliary) = quantize(&config, &weights)?;
-        let element_count = weights.elem_count();
-        let restored = dequantize(&config, &quantized, &auxiliary, element_count)?;
+        let restored = dequantize(&config, &quantized, &auxiliary, weights.dims())?;
         assert_eq!(restored.elem_count(), weights.elem_count());
         Ok(())
     }
@@ -535,6 +567,34 @@ mod tests {
             scale_tensor_name("model.layers.0.mlp.down_proj.weight"),
             "model.layers.0.mlp.down_proj.weight_scale"
         );
+        assert_eq!(
+            shape_tensor_name("model.layers.0.mlp.down_proj.weight"),
+            "model.layers.0.mlp.down_proj.weight_shape"
+        );
+        assert!(is_quantization_metadata("layer.weight_scale"));
+        assert!(is_quantization_metadata("layer.weight_shape"));
+        assert!(!is_quantization_metadata("layer.weight"));
+    }
+
+    #[test]
+    fn fp4_round_trip_preserves_a_two_dimensional_shape() -> anyhow::Result<()> {
+        let device = Device::Cpu;
+        let values: Vec<f32> = (0..6).map(|index| index as f32 / 2.0).collect();
+        let weights = Tensor::from_vec(values, (2, 3), &device)?;
+        let (packed, exponents) = quantize_fp4_mxfp4(&weights)?;
+        let restored = dequantize_fp4_mxfp4(&packed, &exponents, &[2, 3])?;
+        assert_eq!(restored.dims(), &[2, 3]);
+        Ok(())
+    }
+
+    #[test]
+    fn fp4_odd_element_count_stays_exact_with_the_original_shape() -> anyhow::Result<()> {
+        let device = Device::Cpu;
+        let weights = Tensor::from_vec(vec![1.0_f32; 33], (33,), &device)?;
+        let (packed, exponents) = quantize_fp4_mxfp4(&weights)?;
+        let restored = dequantize_fp4_mxfp4(&packed, &exponents, &[33])?;
+        assert_eq!(restored.elem_count(), 33, "no padding nibble may leak");
+        Ok(())
     }
 
     #[test]
@@ -567,6 +627,10 @@ mod tests {
         let mut tensors = HashMap::new();
         tensors.insert(name.clone(), packed);
         tensors.insert(scale_tensor_name(&name), exponents);
+        tensors.insert(
+            shape_tensor_name(&name),
+            Tensor::from_vec(vec![32_u32], (1,), &device)?,
+        );
 
         let dequantized = dequantize_checkpoint_tensors(tensors, QuantizationScheme::Fp4)?;
         assert_eq!(dequantized.len(), 1);
@@ -576,6 +640,30 @@ mod tests {
         // 32 nibbles pack into 16 bytes, dequantized back to 32 F32 values.
         assert_eq!(restored.dims(), &[32]);
         assert_eq!(restored.dtype(), DType::F32);
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_tensor_map_fp4_uses_the_stored_shape_for_two_dimensions() -> anyhow::Result<()> {
+        let device = Device::Cpu;
+        let name = "model.layers.0.proj.weight".to_string();
+        let values: Vec<f32> = (0..64).map(|index| index as f32 / 8.0).collect();
+        let weights = Tensor::from_vec(values, (8, 8), &device)?;
+        let (packed, exponents) = quantize_fp4_mxfp4(&weights)?;
+        let mut tensors = HashMap::new();
+        tensors.insert(name.clone(), packed);
+        tensors.insert(scale_tensor_name(&name), exponents);
+        tensors.insert(
+            shape_tensor_name(&name),
+            Tensor::from_vec(vec![8_u32, 8_u32], (2,), &device)?,
+        );
+
+        let dequantized = dequantize_checkpoint_tensors(tensors, QuantizationScheme::Fp4)?;
+        assert_eq!(dequantized.len(), 1, "metadata tensors must be consumed");
+        let restored = dequantized
+            .get(&name)
+            .ok_or_else(|| anyhow::anyhow!("missing weight '{name}'"))?;
+        assert_eq!(restored.dims(), &[8, 8]);
         Ok(())
     }
 
