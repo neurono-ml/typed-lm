@@ -390,7 +390,15 @@ pub fn weight_kind_from_safetensors_dtypes(tensor_dtypes: &HashMap<String, Strin
     let mut has_float8 = false;
     let mut has_float4 = false;
     let mut has_dense = false;
-    for dtype in tensor_dtypes.values() {
+    let mut has_scale = false;
+    for (name, dtype) in tensor_dtypes {
+        if name.ends_with("_scale") && dtype.eq_ignore_ascii_case("U8") {
+            // Packed FP4 exports store E2M1 nibbles and F8E8M0 exponents as U8
+            // (safetensors/candle cannot serialize `F4`), pairing them with a
+            // `*_scale` tensor. That signature is unambiguous: a dense
+            // checkpoint never carries a `U8` scale tensor.
+            has_scale = true;
+        }
         let normalized = dtype.to_ascii_uppercase();
         if normalized.starts_with("F4")
             || normalized.starts_with("MXFP4")
@@ -412,6 +420,9 @@ pub fn weight_kind_from_safetensors_dtypes(tensor_dtypes: &HashMap<String, Strin
         WeightKind::Float4
     } else if has_float8 {
         WeightKind::Float8
+    } else if has_scale {
+        // Packed FP4 export without an explicit float dtype in the header.
+        WeightKind::Float4
     } else if has_dense {
         WeightKind::Dense
     } else {
@@ -640,6 +651,19 @@ mod tests {
     fn bare_f4_dtype_is_flagged_float4() {
         let mut dtypes = HashMap::new();
         dtypes.insert("layer.weight".to_string(), "F4".to_string());
+        assert_eq!(
+            weight_kind_from_safetensors_dtypes(&dtypes),
+            WeightKind::Float4
+        );
+    }
+
+    #[test]
+    fn packed_u8_float4_export_is_flagged_float4() {
+        // The trainer's FP4 export stores nibbles and exponents as U8; the
+        // paired `*_scale` tensor marks it as FP4 rather than dense.
+        let mut dtypes = HashMap::new();
+        dtypes.insert("layer.weight".to_string(), "U8".to_string());
+        dtypes.insert("layer.weight_scale".to_string(), "U8".to_string());
         assert_eq!(
             weight_kind_from_safetensors_dtypes(&dtypes),
             WeightKind::Float4

@@ -1,9 +1,10 @@
 //! The serving loader must accept a checkpoint quantized by the trainer.
 //!
-//! This test builds a tiny checkpoint, quantizes it to FP8/FP4 with the trainer
-//! export path, and then loads the resulting directory through the serving
-//! checkpoint resolver plus the low-precision variable builder. It needs no
-//! network but does exercise real tensor round-trips, so it is `#[ignore]` in
+//! This test builds a tiny checkpoint and writes a quantized artifact the same
+//! way the trainer's export does (native `F8_E4M3` + per-channel scales for FP8,
+//! packed `U8` nibbles + `U8` exponents for FP4), then loads the directory
+//! through the serving checkpoint resolver and the shared dequantizer. It needs
+//! no network but does exercise real tensor round-trips, so it is `#[ignore]` in
 //! CI and run explicitly with `--ignored`.
 
 use std::collections::HashMap;
@@ -12,61 +13,67 @@ use std::path::Path;
 use candle_core::{DType, Device, Tensor};
 use typed_lm_common::checkpoint::{ModelReference, WeightKind};
 use typed_lm_common::checkpoint_resolver::LocalCheckpointResolver;
-use typed_lm_common::quantization::{dequantize_checkpoint_tensors, QuantizationScheme};
+use typed_lm_common::quantization::{
+    dequantize_checkpoint_tensors, scale_tensor_name, QuantizationConfig, QuantizationScheme,
+};
 
-/// Writes a tiny config + tokenizer + one dense weight tensor.
-fn write_tiny_checkpoint(root: &Path) -> anyhow::Result<()> {
-    std::fs::create_dir_all(root)?;
-    std::fs::write(
-        root.join("config.json"),
-        br#"{"model_type": "llama", "vocab_size": 8, "hidden_size": 4}"#,
-    )?;
-    std::fs::write(root.join("tokenizer.json"), b"{}")?;
-    let device = Device::Cpu;
-    let mut tensors: HashMap<String, Tensor> = HashMap::new();
-    tensors.insert(
-        "model.embed_tokens.weight".to_string(),
-        Tensor::new(&[[1.0_f32, -2.0, 0.5, 3.0]], &device)?,
-    );
-    tensors.insert(
-        "model.norm.weight".to_string(),
-        Tensor::new(&[1.0_f32, 1.0, 1.0, 1.0], &device)?,
-    );
-    candle_core::safetensors::save(&tensors, root.join("model.safetensors"))?;
+/// Writes a minimal valid tokenizer so the resolver accepts the directory.
+fn write_tokenizer(path: &Path) -> anyhow::Result<()> {
+    use std::collections::HashMap as TokenMap;
+    use tokenizers::models::wordlevel::WordLevelBuilder;
+    use tokenizers::pre_tokenizers::whitespace::Whitespace;
+    use tokenizers::Tokenizer;
+
+    let vocabulary: TokenMap<String, u32> = [("A".to_string(), 0_u32), ("[UNK]".to_string(), 1)]
+        .into_iter()
+        .collect();
+    let word_level = WordLevelBuilder::default()
+        .vocab(vocabulary)
+        .unk_token("[UNK]".to_string())
+        .build()
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let mut tokenizer = Tokenizer::new(word_level);
+    tokenizer.with_pre_tokenizer(Whitespace);
+    tokenizer
+        .save(path, false)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     Ok(())
 }
 
-/// Quantizes the tiny checkpoint in memory and writes the artifact tensors.
-fn quantize_into(
-    source: &Path,
-    destination: &Path,
-    scheme: QuantizationScheme,
-) -> anyhow::Result<()> {
+/// Writes a quantized artifact the way the trainer export does, into `destination`.
+///
+/// The dtype is preserved so the resolver detects the low-precision scheme:
+/// FP8 keeps native `F8_E4M3` tensors; FP4 uses packed `U8` nibbles plus `U8`
+/// exponents (safetensors/candle cannot convert `F4`).
+fn write_quantized_artifact(destination: &Path, scheme: QuantizationScheme) -> anyhow::Result<()> {
     std::fs::create_dir_all(destination)?;
-    let device = Device::Cpu;
-    let dense = candle_core::safetensors::load(source.join("model.safetensors"), &device)?;
     std::fs::write(
         destination.join("config.json"),
-        std::fs::read(source.join("config.json"))?,
+        br#"{"model_type": "llama", "vocab_size": 8, "hidden_size": 4}"#,
     )?;
-    std::fs::write(
-        destination.join("tokenizer.json"),
-        std::fs::read(source.join("tokenizer.json"))?,
-    )?;
-    // Round-trip through the shared quantization helpers to obtain the
-    // quantized tensors the loader will dequantize.
-    let configuration = typed_lm_common::quantization::QuantizationConfig::new(scheme);
+    write_tokenizer(&destination.join("tokenizer.json"))?;
+
+    let device = Device::Cpu;
+    let weights = Tensor::new(&[[1.0_f32, -2.0, 0.5, 3.0]], &device)?;
+    let configuration = QuantizationConfig::new(scheme);
     let mut artifact: HashMap<String, Tensor> = HashMap::new();
-    let (name, weight) = dense
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("the tiny checkpoint has no weight tensor"))?;
-    let (quantized, auxiliary) = typed_lm_common::quantization::quantize(&configuration, &weight)?;
-    artifact.insert(name.clone(), quantized.to_dtype(DType::F32)?);
-    artifact.insert(
-        typed_lm_common::quantization::scale_tensor_name(&name),
-        auxiliary.to_dtype(DType::F32)?,
-    );
+    let name = "model.embed_tokens.weight".to_string();
+    match scheme {
+        QuantizationScheme::Fp8 => {
+            let (quantized, scales) =
+                typed_lm_common::quantization::quantize(&configuration, &weights)?;
+            artifact.insert(name.clone(), quantized);
+            artifact.insert(scale_tensor_name(&name), scales);
+        }
+        QuantizationScheme::Fp4 => {
+            let (packed, exponents) = typed_lm_common::quantization::quantize_fp4_mxfp4(&weights)?;
+            artifact.insert(name.clone(), packed.to_dtype(DType::U8)?);
+            artifact.insert(scale_tensor_name(&name), exponents.to_dtype(DType::U8)?);
+        }
+        QuantizationScheme::None => {
+            artifact.insert(name.clone(), weights.to_dtype(DType::F32)?);
+        }
+    }
     candle_core::safetensors::save(&artifact, destination.join("model.safetensors"))?;
     std::fs::write(
         destination.join("quantization_config.json"),
@@ -77,12 +84,10 @@ fn quantize_into(
 
 #[test]
 #[ignore = "exercises a real artifact round-trip; run with --ignored"]
-fn resolve_accepts_a_quantized_artifact_directory() -> anyhow::Result<()> {
+fn resolve_accepts_an_fp8_artifact_directory() -> anyhow::Result<()> {
     let directory = tempfile::tempdir()?;
-    let source = directory.path().join("base");
-    write_tiny_checkpoint(&source)?;
     let artifact = directory.path().join("artifact");
-    quantize_into(&source, &artifact, QuantizationScheme::Fp8)?;
+    write_quantized_artifact(&artifact, QuantizationScheme::Fp8)?;
 
     let reference = ModelReference::Local {
         path: artifact.clone(),
@@ -91,27 +96,34 @@ fn resolve_accepts_a_quantized_artifact_directory() -> anyhow::Result<()> {
         LocalCheckpointResolver::new(artifact.clone(), None, None).resolve(&reference, None)?;
     assert_eq!(checkpoint.weight_kind, WeightKind::Float8);
 
-    // The loader path dequantizes the artifact back to dense F32.
+    // The loader dequantizes the artifact back to dense F32.
     let device = Device::Cpu;
     let tensors = candle_core::safetensors::load(artifact.join("model.safetensors"), &device)?;
     let dense = dequantize_checkpoint_tensors(tensors, QuantizationScheme::Fp8)?;
     assert!(!dense.is_empty());
+    for tensor in dense.values() {
+        assert_eq!(tensor.dtype(), DType::F32);
+    }
     Ok(())
 }
 
 #[test]
 #[ignore = "exercises a real artifact round-trip; run with --ignored"]
-fn fp4_artifact_dequantizes_through_the_loader() -> anyhow::Result<()> {
+fn resolve_accepts_an_fp4_artifact_directory() -> anyhow::Result<()> {
     let directory = tempfile::tempdir()?;
-    let source = directory.path().join("base");
-    write_tiny_checkpoint(&source)?;
     let artifact = directory.path().join("artifact");
-    quantize_into(&source, &artifact, QuantizationScheme::Fp4)?;
+    write_quantized_artifact(&artifact, QuantizationScheme::Fp4)?;
+
     let reference = ModelReference::Local {
         path: artifact.clone(),
     };
     let checkpoint =
         LocalCheckpointResolver::new(artifact.clone(), None, None).resolve(&reference, None)?;
     assert_eq!(checkpoint.weight_kind, WeightKind::Float4);
+
+    let device = Device::Cpu;
+    let tensors = candle_core::safetensors::load(artifact.join("model.safetensors"), &device)?;
+    let dense = dequantize_checkpoint_tensors(tensors, QuantizationScheme::Fp4)?;
+    assert!(!dense.is_empty());
     Ok(())
 }
