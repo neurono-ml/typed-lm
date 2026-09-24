@@ -30,10 +30,19 @@ const CHATML_ANSWER_INSTRUCTION: &str = "Answer with a single option letter and 
 
 impl PromptTemplate {
     /// Selects the template matching the detected architecture.
+    ///
+    /// Llama checkpoints in this ecosystem use the Manacá markers; every other
+    /// supported dense family (Qwen2/Qwen3, Mistral, Gemma*) is served with the
+    /// ChatML template its instruct variants expect.
     pub fn for_architecture(architecture: ModelArchitecture) -> Self {
         match architecture {
             ModelArchitecture::Llama => Self::Manaca,
-            ModelArchitecture::Qwen2 => Self::ChatMl,
+            ModelArchitecture::Qwen2
+            | ModelArchitecture::Qwen3
+            | ModelArchitecture::Mistral
+            | ModelArchitecture::Gemma
+            | ModelArchitecture::Gemma2
+            | ModelArchitecture::Gemma3 => Self::ChatMl,
         }
     }
 

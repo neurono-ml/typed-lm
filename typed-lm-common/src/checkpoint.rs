@@ -6,8 +6,10 @@
 //!
 //! 1. **Source** — a local filesystem path or a Hugging Face repository.
 //! 2. **Layout** — sharded/single safetensors, GGUF, PyTorch or NumPy.
-//! 3. **Architecture** — Llama or Qwen2 (other decoder families are rejected
-//!    with an actionable error).
+//! 3. **Architecture** — one of the supported dense decoder families (Llama,
+//!    Qwen2, Qwen3, Mistral, Gemma, Gemma2 or Gemma3). Mixture-of-Experts and
+//!    multi-head-latent-attention families are rejected with an actionable
+//!    error.
 //! 4. **Weight kind** — dense (BF16/F16/F32) or GGML-quantized.
 //!
 //! Pure detection functions take file-name lists (or directory contents) and
@@ -91,27 +93,64 @@ impl WeightLayout {
 }
 
 /// Decoder architecture understood by the vendored parallel forward pass.
+///
+/// Only dense families are listed. Mixture-of-Experts (`mixtral`, `qwen3_moe`)
+/// and multi-head-latent-attention (`deepseek_v2`, `deepseek_v3`) families are
+/// intentionally absent and rejected by
+/// [`from_model_type`](ModelArchitecture::from_model_type) with an actionable
+/// error message naming the supported set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelArchitecture {
     Llama,
     Qwen2,
+    Qwen3,
+    Mistral,
+    Gemma,
+    Gemma2,
+    Gemma3,
 }
 
 impl ModelArchitecture {
+    /// All dense architectures supported by the workspace, in canonical order.
+    pub const SUPPORTED: [ModelArchitecture; 7] = [
+        ModelArchitecture::Llama,
+        ModelArchitecture::Qwen2,
+        ModelArchitecture::Qwen3,
+        ModelArchitecture::Mistral,
+        ModelArchitecture::Gemma,
+        ModelArchitecture::Gemma2,
+        ModelArchitecture::Gemma3,
+    ];
+
     /// Maps the `model_type`/`general.architecture` value to an architecture.
+    ///
+    /// The comparison is case-insensitive. Returns `None` for unsupported
+    /// families, including the MoE/MLA ones the plan explicitly excludes.
     pub fn from_model_type(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
             "llama" => Some(Self::Llama),
             "qwen2" => Some(Self::Qwen2),
+            "qwen3" => Some(Self::Qwen3),
+            "mistral" => Some(Self::Mistral),
+            "gemma" => Some(Self::Gemma),
+            "gemma2" => Some(Self::Gemma2),
+            "gemma3" => Some(Self::Gemma3),
             _ => None,
         }
     }
 
     /// Whether the attention projections carry biases (Qwen2 does, Llama does not).
+    ///
+    /// This is the architectural default; the concrete `config.json` may still
+    /// set `attention_bias` differently for families that expose the flag
+    /// (Qwen3, Gemma*). The authoritative value lives in
+    /// [`ParallelModelConfig::attention_bias`](crate::model_config::ParallelModelConfig).
     pub fn has_query_key_value_bias(self) -> bool {
         match self {
-            Self::Llama => false,
             Self::Qwen2 => true,
+            Self::Llama | Self::Qwen3 | Self::Mistral | Self::Gemma | Self::Gemma2 | Self::Gemma3 => {
+                false
+            }
         }
     }
 
@@ -119,7 +158,20 @@ impl ModelArchitecture {
         match self {
             Self::Llama => "llama",
             Self::Qwen2 => "qwen2",
+            Self::Qwen3 => "qwen3",
+            Self::Mistral => "mistral",
+            Self::Gemma => "gemma",
+            Self::Gemma2 => "gemma2",
+            Self::Gemma3 => "gemma3",
         }
+    }
+
+    /// Comma-separated list of the supported `model_type` values.
+    ///
+    /// Used in error messages so an unsupported checkpoint points the caller at
+    /// the dense families this workspace can execute.
+    pub fn supported_names() -> &'static str {
+        "llama, qwen2, qwen3, mistral, gemma, gemma2, gemma3"
     }
 }
 
@@ -590,18 +642,78 @@ mod tests {
     }
 
     #[test]
-    fn architecture_accepts_llama_and_qwen2_only() {
-        assert_eq!(
-            ModelArchitecture::from_model_type("llama"),
-            Some(ModelArchitecture::Llama)
-        );
-        assert_eq!(
-            ModelArchitecture::from_model_type("Qwen2"),
-            Some(ModelArchitecture::Qwen2)
-        );
-        assert_eq!(ModelArchitecture::from_model_type("qwen3"), None);
+    fn architecture_accepts_every_dense_family() -> anyhow::Result<()> {
+        let cases = [
+            ("llama", ModelArchitecture::Llama),
+            ("Qwen2", ModelArchitecture::Qwen2),
+            ("qwen3", ModelArchitecture::Qwen3),
+            ("Mistral", ModelArchitecture::Mistral),
+            ("gemma", ModelArchitecture::Gemma),
+            ("gemma2", ModelArchitecture::Gemma2),
+            ("gemma3", ModelArchitecture::Gemma3),
+        ];
+        for (model_type, expected) in cases {
+            assert_eq!(
+                ModelArchitecture::from_model_type(model_type),
+                Some(expected),
+                "model_type '{model_type}' must map to {expected:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn architecture_rejects_moe_and_mla_families() {
+        for unsupported in [
+            "mixtral",
+            "qwen3_moe",
+            "deepseek_v2",
+            "deepseek_v3",
+            "deepseek2",
+            "phi",
+        ] {
+            assert_eq!(
+                ModelArchitecture::from_model_type(unsupported),
+                None,
+                "model_type '{unsupported}' must not be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn architecture_capability_defaults_are_consistent() {
         assert!(!ModelArchitecture::Llama.has_query_key_value_bias());
         assert!(ModelArchitecture::Qwen2.has_query_key_value_bias());
+        assert!(!ModelArchitecture::Qwen3.has_query_key_value_bias());
+        assert!(!ModelArchitecture::Mistral.has_query_key_value_bias());
+        assert!(!ModelArchitecture::Gemma.has_query_key_value_bias());
+        assert!(!ModelArchitecture::Gemma2.has_query_key_value_bias());
+        assert!(!ModelArchitecture::Gemma3.has_query_key_value_bias());
+    }
+
+    #[test]
+    fn architecture_names_and_supported_list_are_stable() {
+        assert_eq!(ModelArchitecture::Llama.name(), "llama");
+        assert_eq!(ModelArchitecture::Qwen2.name(), "qwen2");
+        assert_eq!(ModelArchitecture::Qwen3.name(), "qwen3");
+        assert_eq!(ModelArchitecture::Mistral.name(), "mistral");
+        assert_eq!(ModelArchitecture::Gemma.name(), "gemma");
+        assert_eq!(ModelArchitecture::Gemma2.name(), "gemma2");
+        assert_eq!(ModelArchitecture::Gemma3.name(), "gemma3");
+        assert_eq!(
+            ModelArchitecture::SUPPORTED.len(),
+            ModelArchitecture::SUPPORTED
+                .iter()
+                .map(|architecture| architecture.name())
+                .count()
+        );
+        for architecture in ModelArchitecture::SUPPORTED {
+            assert_eq!(
+                ModelArchitecture::from_model_type(architecture.name()),
+                Some(architecture)
+            );
+            assert!(ModelArchitecture::supported_names().contains(architecture.name()));
+        }
     }
 
     #[test]

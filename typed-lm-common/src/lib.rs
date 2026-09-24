@@ -5,6 +5,7 @@
 //! label arithmetic, deterministic prompt rendering, checkpoint detection,
 //! device/dtype resolution, model configuration and telemetry.
 
+pub mod architecture_traits;
 pub mod checkpoint;
 pub mod checkpoint_resolver;
 pub mod classifier;
