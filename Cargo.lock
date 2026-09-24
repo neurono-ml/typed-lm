@@ -2599,32 +2599,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "manaca-typed"
-version = "0.1.0"
-dependencies = [
- "actix-web",
- "anyhow",
- "candle-core",
- "candle-nn",
- "candle-transformers",
- "clap",
- "half",
- "hf-hub",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "rig-core",
- "serde",
- "serde_json",
- "tempfile",
- "tokenizers 0.19.1",
- "tokio",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4935,6 +4909,79 @@ dependencies = [
  "rustls-pki-types",
  "sha1 0.10.7",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "typed-lm-common"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
+ "clap",
+ "half",
+ "hf-hub",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokenizers 0.19.1",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "typed-lm-serve"
+version = "0.1.0"
+dependencies = [
+ "actix-web",
+ "anyhow",
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
+ "clap",
+ "half",
+ "hf-hub",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "rig-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokenizers 0.19.1",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "typed-lm-common",
+]
+
+[[package]]
+name = "typed-lm-trainer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
+ "clap",
+ "half",
+ "hf-hub",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokenizers 0.19.1",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "typed-lm-common",
 ]
 
 [[package]]
