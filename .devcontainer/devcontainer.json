@@ -1,0 +1,63 @@
+{
+  "name": "manaca-jev-like",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspaces/manaca-jev-like",
+  "shutdownAction": "stopCompose",
+  // The CUDA toolkit is installed by the feature at /usr/local/cuda; expose it
+  // to VS Code terminals (remoteEnv) and to login shells (see
+  // postCreateCommand, which symlinks nvcc and writes /etc/profile.d).
+  "remoteEnv": {
+    "CUDA_HOME": "/usr/local/cuda",
+    "PATH": "/usr/local/cuda/bin:${containerEnv:PATH}"
+  },
+  // CUDA toolkit (nvcc + libraries) installed inside the container so
+  // `cargo build --features cuda` works without touching the host. The GPU
+  // device reservation lives in docker-compose.yml (deploy.resources...).
+  "features": {
+    "ghcr.io/devcontainers/features/nvidia-cuda:2": {
+      "installToolkit": true,
+      "installCudnn": false,
+      "cudaVersion": "12.5"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "sst-dev.opencode"
+      ]
+    }
+  },
+  // Forwarded so every port is reachable from outside the devcontainer:
+  // 8080 serves the Jev-compatible API, 16686 serves the Jaeger UI,
+  // 4317/4318 ingest OTLP traces.
+  "forwardPorts": [8080, 16686, 4317, 4318],
+  "portsAttributes": {
+    "8080": {
+      "label": "manaca API",
+      "onAutoForward": "notify"
+    },
+    "16686": {
+      "label": "Jaeger UI",
+      "onAutoForward": "openBrowser"
+    },
+    "4317": {
+      "label": "OTLP gRPC",
+      "onAutoForward": "silent"
+    },
+    "4318": {
+      "label": "OTLP HTTP",
+      "onAutoForward": "silent"
+    }
+  },
+  // Guarantees the opencode CLI for every shell (integrated terminal,
+  // sst-dev.opencode extension, non-interactive shells): the upstream
+  // installer always drops the binary at $HOME/.opencode/bin, so the command
+  // copies it system-wide into /usr/local/bin (passwordless sudo in this
+  // image), verifies it, then prefetches the Rust dependencies. The chown
+  // first hands the cache volumes (root-owned on first mount) to vscode.
+  "postCreateCommand": "sudo chown -R \"$(id -u):$(id -g)\" /usr/local/cargo/registry /workspaces/manaca-jev-like/target /home/vscode/.cache; sudo ln -sf /usr/local/cuda/bin/nvcc /usr/local/bin/nvcc; printf 'export CUDA_HOME=/usr/local/cuda\\nexport PATH=/usr/local/cuda/bin:$PATH\\n' | sudo tee /etc/profile.d/nvidia-cuda.sh >/dev/null; sudo chmod 644 /etc/profile.d/nvidia-cuda.sh; curl -fsSL https://opencode.ai/install -o /tmp/opencode-install.sh && bash /tmp/opencode-install.sh -s -- --no-modify-path; sudo install -m 755 \"$HOME/.opencode/bin/opencode\" /usr/local/bin/opencode && /usr/local/bin/opencode --version && cargo fetch",
+  "remoteUser": "vscode"
+}

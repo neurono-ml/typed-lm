@@ -1,0 +1,55 @@
+services:
+  app:
+    image: mcr.microsoft.com/devcontainers/rust:1-bookworm
+    # GPU passthrough for CUDA builds and inference. Requires the NVIDIA
+    # container toolkit on the host (nvidia-ctk runtime configure --runtime=docker)
+    # and a working driver (verify with:
+    #   docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi).
+    # The CUDA toolkit/nvcc itself is installed by the nvidia-cuda devcontainer
+    # feature declared in devcontainer.json, keeping the base image unchanged.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ..:/workspaces/manaca-jev-like:cached
+      - ~/.config/opencode/:/home/vscode/.config/opencode:cached
+      - ~/.opencode/:/home/vscode/.opencode:cached
+      - ~/.config/openspec/:/home/vscode/.config/openspec:cached
+      - ~/.cache/huggingface/:/home/vscode/.cache/huggingface:cached
+      - ~/.local/:/home/vscode/.local/
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/workspaces/manaca-jev-like/target
+    working_dir: /workspaces/manaca-jev-like
+    command: sleep infinity
+    depends_on:
+      - jaeger
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      RUST_LOG: info,actix_web=info
+      # Expose the host GPU to the container (paired with the device
+      # reservation above).
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    ports:
+      - "8080:8080"
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.76.0
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      # Jaeger UI, reachable from the host browser.
+      - "0.0.0.0:16686:16686"
+      # OTLP/gRPC receiver used by the Rust service.
+      - "4317:4317"
+      # OTLP/HTTP receiver (alternative ingest path).
+      - "4318:4318"
+
+volumes:
+  cargo-cache:
+  target-cache:
