@@ -161,6 +161,16 @@ curl -s http://127.0.0.1:8080/health/live
 Equivalent requests are also available as an HTTP file in `example.http`
 (VS Code REST Client format).
 
+## Serving a from-scratch / full checkpoint
+
+An artifact produced by a `from-scratch` or `full` training run
+(`model.safetensors` + `config.json` + `tokenizer.json` in one directory) is a
+complete, servable checkpoint. Point `--model-id` at that directory and the
+server loads it like any other checkpoint and answers through the same
+`POST /v1/systemone` contract — no adapter merge step is required. LoRA/QLoRA
+runs, by contrast, emit an adapter that must be merged (for example with the
+trainer's `quantize --adapter-directory`) before it can be served.
+
 ## Next steps
 
 - [Running the server](running.md) — flags, GPU/CPU acceleration and layouts.
