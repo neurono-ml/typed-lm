@@ -14,6 +14,8 @@ use clap::{CommandFactory, Parser, Subcommand};
 use typed_lm_common::device::DeviceResolver;
 use typed_lm_common::quantization::QuantizationScheme;
 
+use crate::model::initialization::InitializationConfiguration;
+
 /// typed-lm-trainer: fine-tune and quantize the served language models.
 #[derive(Parser, Debug)]
 #[command(
@@ -160,6 +162,9 @@ pub struct ModelGeometryArguments {
     /// Number of query attention heads.
     #[arg(long)]
     pub num_attention_heads: Option<usize>,
+    /// Explicit head dimension (defaults to `hidden_size / num_attention_heads`).
+    #[arg(long)]
+    pub head_dim: Option<usize>,
     /// Number of key/value attention heads (grouped-query attention).
     #[arg(long)]
     pub num_key_value_heads: Option<usize>,
@@ -178,6 +183,27 @@ pub struct ModelGeometryArguments {
     /// Whether the input and output embeddings share weights.
     #[arg(long)]
     pub tie_word_embeddings: Option<bool>,
+    /// Whether the attention projections carry biases.
+    #[arg(long)]
+    pub attention_bias: Option<bool>,
+    /// Sliding-window attention size, when the family uses it.
+    #[arg(long)]
+    pub sliding_window: Option<usize>,
+    /// Gemma3 global/local attention alternation pattern.
+    #[arg(long)]
+    pub sliding_window_pattern: Option<usize>,
+    /// Gemma3 local rotary embedding base frequency.
+    #[arg(long)]
+    pub rope_local_base_frequency: Option<f64>,
+    /// Gemma2/Gemma3 attention scaling denominator.
+    #[arg(long)]
+    pub query_pre_attention_scalar: Option<usize>,
+    /// Gemma2/Gemma3 `final_logit_softcapping`.
+    #[arg(long)]
+    pub logit_softcapping: Option<f64>,
+    /// Gemma2/Gemma3 `attn_logit_softcapping`.
+    #[arg(long)]
+    pub attention_logit_softcapping: Option<f64>,
 }
 
 /// Arguments for the `train` subcommand.
@@ -188,8 +214,12 @@ pub struct TrainArguments {
     pub model_id: String,
 
     /// Dataset path: a `.jsonl`/`.json` file or a directory (auto-detected).
+    ///
+    /// Optional so it can be supplied through `[dataset] path` in the
+    /// configuration file; a run without either source fails with an actionable
+    /// error when the batches are collated.
     #[arg(long)]
-    pub dataset: PathBuf,
+    pub dataset: Option<PathBuf>,
 
     /// Directory that receives the trained adapter and metadata.
     #[arg(long, default_value = "output/train")]
@@ -282,6 +312,14 @@ pub struct TrainArguments {
     /// the TOML `[tokenizer] file` key.
     #[arg(long)]
     pub tokenizer_file: Option<PathBuf>,
+
+    /// From-scratch weight initializers, resolved from `[initialization]`.
+    ///
+    /// Populated by
+    /// [`resolve_train_arguments`](crate::configuration_resolution::resolve_train_arguments)
+    /// with **CLI > TOML > default** precedence; not a CLI flag.
+    #[arg(skip)]
+    pub initialization: InitializationConfiguration,
 }
 
 /// Arguments for the `quantize` subcommand.
@@ -355,6 +393,16 @@ impl TrainerArguments {
 }
 
 impl TrainArguments {
+    /// The effective dataset path, requiring either `--dataset` or `[dataset] path`.
+    pub fn dataset_path(&self) -> anyhow::Result<&std::path::Path> {
+        self.dataset.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "a dataset is required: pass --dataset or set [dataset] path in the \
+                 configuration file"
+            )
+        })
+    }
+
     /// Resolves the parsed `--method` value into a [`TrainingMethod`].
     pub fn training_method(&self) -> anyhow::Result<TrainingMethod> {
         TrainingMethod::from_flag(&self.method).ok_or_else(|| {
@@ -452,8 +500,24 @@ mod tests {
     }
 
     #[test]
-    fn train_requires_a_dataset() {
-        assert!(TrainerArguments::try_parse_from(["typed-lm-trainer", "train"]).is_err());
+    fn dataset_is_optional_at_parse_time_and_validated_on_access() -> anyhow::Result<()> {
+        let arguments = TrainerArguments::try_parse_from(["typed-lm-trainer", "train"])?;
+        let Command::Train(train) = arguments.command else {
+            return Err(anyhow::anyhow!("expected the train subcommand"));
+        };
+        assert!(train.dataset.is_none());
+        assert!(train.dataset_path().is_err());
+
+        let with_dataset =
+            TrainerArguments::try_parse_from(["typed-lm-trainer", "train", "--dataset", "data"])?;
+        let Command::Train(with_dataset) = with_dataset.command else {
+            return Err(anyhow::anyhow!("expected the train subcommand"));
+        };
+        assert_eq!(
+            with_dataset.dataset_path()?.to_string_lossy(),
+            "data".to_string()
+        );
+        Ok(())
     }
 
     #[test]

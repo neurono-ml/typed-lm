@@ -37,13 +37,6 @@ pub const FULL_WEIGHTS_NAME: &str = "model.safetensors";
 /// Name of the configuration file inside a full checkpoint directory.
 pub const FULL_CONFIG_NAME: &str = "config.json";
 
-/// Sliding-window pattern written for Gemma3 checkpoints.
-///
-/// [`ParallelModelConfig`] does not retain this value (it does not affect the
-/// vendored forward pass), but the Gemma3 `config.json` requires it to parse, so
-/// a canonical default is emitted.
-const GEMMA3_SLIDING_WINDOW_PATTERN: usize = 6;
-
 /// Persisted adapter metadata.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AdapterConfiguration {
@@ -203,7 +196,9 @@ pub fn load_full_checkpoint(
 /// per-family fields (explicit head dimension, sliding window, logit
 /// soft-capping, query pre-attention scalar and activation) that only some
 /// `config.json` variants declare.
-fn configuration_to_json(configuration: &ParallelModelConfig) -> anyhow::Result<serde_json::Value> {
+pub fn configuration_to_json(
+    configuration: &ParallelModelConfig,
+) -> anyhow::Result<serde_json::Value> {
     let architecture = configuration.architecture;
     let mut value = json!({
         "model_type": architecture.name(),
@@ -256,7 +251,7 @@ fn configuration_to_json(configuration: &ParallelModelConfig) -> anyhow::Result<
             );
             object.insert(
                 "sliding_window_pattern".to_string(),
-                json!(GEMMA3_SLIDING_WINDOW_PATTERN),
+                json!(configuration.sliding_window_pattern.max(1)),
             );
         }
         ModelArchitecture::Llama
@@ -291,15 +286,22 @@ fn configuration_to_json(configuration: &ParallelModelConfig) -> anyhow::Result<
     }
 
     let activation = hidden_activation_name(architecture);
-    object.insert("hidden_act".to_string(), json!(activation));
     match architecture {
-        ModelArchitecture::Gemma | ModelArchitecture::Gemma2 | ModelArchitecture::Gemma3 => {
+        // Gemma v1 accepts `hidden_act` and `hidden_activation`, but candle
+        // rejects a config that sets both, so only the canonical `hidden_act`
+        // is written. Gemma2/Gemma3 only declare `hidden_activation`.
+        ModelArchitecture::Gemma => {
+            object.insert("hidden_act".to_string(), json!(activation));
+        }
+        ModelArchitecture::Gemma2 | ModelArchitecture::Gemma3 => {
             object.insert("hidden_activation".to_string(), json!(activation));
         }
         ModelArchitecture::Llama
         | ModelArchitecture::Qwen2
         | ModelArchitecture::Qwen3
-        | ModelArchitecture::Mistral => {}
+        | ModelArchitecture::Mistral => {
+            object.insert("hidden_act".to_string(), json!(activation));
+        }
     }
 
     Ok(value)

@@ -26,9 +26,7 @@ use typed_lm_trainer::dataset::discovery::discover_dataset_files;
 use typed_lm_trainer::dataset::loader::load_records;
 use typed_lm_trainer::dataset::record::expand_records;
 use typed_lm_trainer::error::TrainerError;
-use typed_lm_trainer::model::initialization::{
-    initialize_model_tensors, InitializationConfiguration,
-};
+use typed_lm_trainer::model::initialization::initialize_model_tensors;
 use typed_lm_trainer::model::trainable_dense;
 use typed_lm_trainer::model::trainable_full::TrainableFull;
 use typed_lm_trainer::model::trainable_llama::LoRAConfiguration;
@@ -101,7 +99,8 @@ async fn run_train(arguments: TrainArguments) -> Result<(), TrainerError> {
 
     // Build the decision-position batches first: this validates the dataset and
     // the answer labels before any adapter allocation.
-    let dataset_files = discover_dataset_files(&arguments.dataset).map_err(TrainerError::from)?;
+    let dataset_files =
+        discover_dataset_files(arguments.dataset_path()?).map_err(TrainerError::from)?;
     let records = load_records(&dataset_files)?;
     let items = expand_records(&records)?;
     let tokenizer = load_tokenizer(&checkpoint.resolved.tokenizer_file)?;
@@ -200,13 +199,23 @@ async fn run_train_full_parameter(
     training_scheme: QuantizationScheme,
     device: &candle_core::Device,
 ) -> Result<(), TrainerError> {
+    if quantization_mode == QuantizationMode::Training {
+        return Err(TrainerError::Configuration(
+            "--quantization-mode training (QLoRA) is not supported with --method full or \
+             from-scratch; use post-training quantization instead"
+                .to_string(),
+        ));
+    }
     let from_scratch = method == TrainingMethod::FromScratch;
     let (configuration, tokenizer_path, source_tensors) = if from_scratch {
         let configuration = configuration_from_geometry(&arguments.geometry)?;
         let tokenizer_path = resolve_scratch_tokenizer(&arguments)?;
-        let initialization = InitializationConfiguration::default();
-        let tensors =
-            initialize_model_tensors(&configuration, &initialization, arguments.seed, device)?;
+        let tensors = initialize_model_tensors(
+            &configuration,
+            &arguments.initialization,
+            arguments.seed,
+            device,
+        )?;
         tracing::info!(
             architecture = configuration.architecture.name(),
             seed = arguments.seed,
@@ -226,7 +235,8 @@ async fn run_train_full_parameter(
     };
 
     // Build the decision-position batches.
-    let dataset_files = discover_dataset_files(&arguments.dataset).map_err(TrainerError::from)?;
+    let dataset_files =
+        discover_dataset_files(arguments.dataset_path()?).map_err(TrainerError::from)?;
     let records = load_records(&dataset_files)?;
     let items = expand_records(&records)?;
     let tokenizer = load_tokenizer(&tokenizer_path)?;
@@ -302,6 +312,11 @@ async fn run_train_full_parameter(
 }
 
 /// Builds a [`ParallelModelConfig`] from explicit CLI/TOML geometry.
+///
+/// Family defaults fill any field the caller did not set, so a from-scratch
+/// Gemma2/Gemma3 run produces a `config.json` that both the trainer and the
+/// serving parser can reparse (the candle `gemma2`/`gemma3` configs require
+/// `query_pre_attn_scalar`, `rope_local_base_freq` and `sliding_window`).
 fn configuration_from_geometry(
     geometry: &ModelGeometryArguments,
 ) -> Result<ParallelModelConfig, TrainerError> {
@@ -330,9 +345,43 @@ fn configuration_from_geometry(
     let traits = typed_lm_common::architecture_traits::DenseArchitectureTraits::for_architecture(
         architecture,
     );
-    let explicit_head_dimension = traits
-        .explicit_head_dimension
-        .then_some(hidden_size / num_attention_heads);
+    let derived_head_dimension = hidden_size / num_attention_heads;
+    let head_dimension = geometry.head_dim.unwrap_or(derived_head_dimension);
+    let explicit_head_dimension =
+        (traits.explicit_head_dimension || geometry.head_dim.is_some()).then_some(head_dimension);
+    let query_pre_attention_scalar = geometry.query_pre_attention_scalar.or_else(|| {
+        traits
+            .supports_query_pre_attention_scalar
+            .then_some(head_dimension)
+    });
+    let logit_softcapping = geometry
+        .logit_softcapping
+        .or_else(|| traits.supports_logit_softcapping.then_some(30.0));
+    let attention_logit_softcapping = geometry
+        .attention_logit_softcapping
+        .or_else(|| traits.supports_attention_logit_softcapping.then_some(50.0));
+    let rope_local_base_frequency = geometry.rope_local_base_frequency.or_else(|| {
+        traits
+            .supports_local_rope_base_frequency
+            .then_some(10_000.0)
+    });
+    let sliding_window = geometry.sliding_window.or(match architecture {
+        typed_lm_common::checkpoint::ModelArchitecture::Gemma2 => Some(4096),
+        typed_lm_common::checkpoint::ModelArchitecture::Gemma3 => Some(1024),
+        _ => None,
+    });
+    let sliding_window_pattern = geometry
+        .sliding_window_pattern
+        .unwrap_or(match architecture {
+            typed_lm_common::checkpoint::ModelArchitecture::Gemma3 => 6,
+            _ => 0,
+        });
+    let tie_word_embeddings = geometry.tie_word_embeddings.unwrap_or(matches!(
+        architecture,
+        typed_lm_common::checkpoint::ModelArchitecture::Gemma
+            | typed_lm_common::checkpoint::ModelArchitecture::Gemma2
+            | typed_lm_common::checkpoint::ModelArchitecture::Gemma3
+    ));
     Ok(ParallelModelConfig {
         architecture,
         vocab_size: required(geometry.vocab_size, "--vocab-size")?,
@@ -344,20 +393,26 @@ fn configuration_from_geometry(
         max_position_embeddings: geometry.max_position_embeddings.unwrap_or(2048),
         rms_norm_eps: geometry.rms_norm_eps.unwrap_or(1e-6),
         rope_theta: geometry.rope_theta.unwrap_or(1000000.0),
-        tie_word_embeddings: geometry.tie_word_embeddings.unwrap_or(false),
+        tie_word_embeddings,
         rope_scaling: None,
-        attention_bias: architecture.has_query_key_value_bias(),
+        attention_bias: geometry
+            .attention_bias
+            .unwrap_or_else(|| architecture.has_query_key_value_bias()),
         explicit_head_dimension,
-        sliding_window: None,
+        sliding_window,
         max_window_layers: 0,
-        logit_softcapping: None,
-        attention_logit_softcapping: None,
-        query_pre_attention_scalar: None,
+        logit_softcapping,
+        attention_logit_softcapping,
+        query_pre_attention_scalar,
         rms_norm_unit_offset: traits.rms_norm_unit_offset,
         embedding_scale: traits
             .scales_embeddings
             .then_some((hidden_size as f64).sqrt()),
-        rope_local_base_frequency: None,
+        hidden_activation: ParallelModelConfig::default_hidden_activation(architecture),
+        rope_local_base_frequency,
+        gemma_block_layout: traits.gemma_block_layout,
+        per_head_query_key_norm: traits.per_head_query_key_norm,
+        sliding_window_pattern,
     })
 }
 
@@ -511,4 +566,77 @@ fn insert_projection_delta(
     let delta = up.matmul(&down)?.to_dtype(DType::F32)?;
     deltas.insert(format!("{prefix}.weight"), delta);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal from-scratch geometry for the given architecture.
+    fn geometry_for(architecture: &str) -> ModelGeometryArguments {
+        ModelGeometryArguments {
+            architecture: Some(architecture.to_string()),
+            vocab_size: Some(128),
+            hidden_size: Some(64),
+            intermediate_size: Some(128),
+            num_hidden_layers: Some(4),
+            num_attention_heads: Some(8),
+            num_key_value_heads: Some(2),
+            max_position_embeddings: Some(128),
+            ..ModelGeometryArguments::default()
+        }
+    }
+
+    #[test]
+    fn from_scratch_geometry_emits_a_serveable_config_for_every_family() -> anyhow::Result<()> {
+        for architecture in typed_lm_common::checkpoint::ModelArchitecture::SUPPORTED {
+            let configuration = configuration_from_geometry(&geometry_for(architecture.name()))?;
+            let value =
+                typed_lm_trainer::training::checkpoint::configuration_to_json(&configuration)?;
+            // The serving parser is the candle `Config` for each family; a
+            // successful reparse proves the emitted file is serveable.
+            let reparsed = ParallelModelConfig::from_json_for_architecture(
+                value,
+                typed_lm_common::checkpoint::ModelArchitecture::from_model_type(
+                    architecture.name(),
+                )
+                .ok_or_else(|| anyhow::anyhow!("unexpected architecture"))?,
+            )?;
+            assert_eq!(reparsed.architecture, architecture);
+            assert_eq!(
+                reparsed.head_dimension(),
+                configuration.head_dimension(),
+                "{architecture:?} head dimension must round-trip"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn gemma_geometry_emits_the_mandatory_gemma_keys() -> anyhow::Result<()> {
+        let gemma2 = configuration_from_geometry(&geometry_for("gemma2"))?;
+        let json = typed_lm_trainer::training::checkpoint::configuration_to_json(&gemma2)?;
+        assert!(json.get("query_pre_attn_scalar").is_some());
+        assert!(json.get("head_dim").is_some());
+        assert!(json.get("hidden_activation").is_some());
+        assert_eq!(
+            json.get("tie_word_embeddings").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+
+        let gemma3 = configuration_from_geometry(&geometry_for("gemma3"))?;
+        let json = typed_lm_trainer::training::checkpoint::configuration_to_json(&gemma3)?;
+        assert!(json.get("query_pre_attn_scalar").is_some());
+        assert!(json.get("rope_local_base_freq").is_some());
+        assert!(json.get("sliding_window").is_some());
+        assert!(json.get("sliding_window_pattern").is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn from_scratch_geometry_rejects_a_missing_architecture() {
+        let mut geometry = geometry_for("llama");
+        geometry.architecture = None;
+        assert!(configuration_from_geometry(&geometry).is_err());
+    }
 }

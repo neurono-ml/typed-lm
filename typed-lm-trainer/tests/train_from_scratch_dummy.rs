@@ -51,7 +51,11 @@ fn tiny_configuration(architecture: ModelArchitecture) -> ParallelModelConfig {
         query_pre_attention_scalar: None,
         rms_norm_unit_offset: traits.rms_norm_unit_offset,
         embedding_scale: traits.scales_embeddings.then_some(4.0),
+        hidden_activation: ParallelModelConfig::default_hidden_activation(architecture),
         rope_local_base_frequency: None,
+        gemma_block_layout: traits.gemma_block_layout,
+        per_head_query_key_norm: traits.per_head_query_key_norm,
+        sliding_window_pattern: 0,
     }
 }
 

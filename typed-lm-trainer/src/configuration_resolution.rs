@@ -54,7 +54,7 @@ pub fn resolve_train_arguments(
             .dataset()
             .and_then(|section| section.path.as_ref())
         {
-            arguments.dataset = value.into();
+            arguments.dataset = Some(value.into());
         }
     }
     if !flag_is_explicit(matches, "output_directory") {
@@ -162,6 +162,7 @@ pub fn resolve_train_arguments(
     }
 
     arguments.geometry = resolve_geometry(matches, configuration.model())?;
+    arguments.initialization = resolve_initialization_configuration(configuration.initialization());
     Ok(arguments)
 }
 
@@ -205,6 +206,11 @@ pub fn resolve_geometry(
             geometry.num_attention_heads = Some(value);
         }
     }
+    if !flag_is_explicit(matches, "head_dim") {
+        if let Some(value) = model.head_dim {
+            geometry.head_dim = Some(value);
+        }
+    }
     if !flag_is_explicit(matches, "num_key_value_heads") {
         if let Some(value) = model.num_key_value_heads {
             geometry.num_key_value_heads = Some(value);
@@ -233,6 +239,41 @@ pub fn resolve_geometry(
     if !flag_is_explicit(matches, "tie_word_embeddings") {
         if let Some(value) = model.tie_word_embeddings {
             geometry.tie_word_embeddings = Some(value);
+        }
+    }
+    if !flag_is_explicit(matches, "attention_bias") {
+        if let Some(value) = model.attention_bias {
+            geometry.attention_bias = Some(value);
+        }
+    }
+    if !flag_is_explicit(matches, "sliding_window") {
+        if let Some(value) = model.sliding_window {
+            geometry.sliding_window = Some(value);
+        }
+    }
+    if !flag_is_explicit(matches, "sliding_window_pattern") {
+        if let Some(value) = model.sliding_window_pattern {
+            geometry.sliding_window_pattern = Some(value);
+        }
+    }
+    if !flag_is_explicit(matches, "rope_local_base_frequency") {
+        if let Some(value) = model.rope_local_base_frequency {
+            geometry.rope_local_base_frequency = Some(value);
+        }
+    }
+    if !flag_is_explicit(matches, "query_pre_attention_scalar") {
+        if let Some(value) = model.query_pre_attention_scalar {
+            geometry.query_pre_attention_scalar = Some(value);
+        }
+    }
+    if !flag_is_explicit(matches, "logit_softcapping") {
+        if let Some(value) = model.logit_softcapping {
+            geometry.logit_softcapping = Some(value);
+        }
+    }
+    if !flag_is_explicit(matches, "attention_logit_softcapping") {
+        if let Some(value) = model.attention_logit_softcapping {
+            geometry.attention_logit_softcapping = Some(value);
         }
     }
     Ok(geometry)
@@ -434,14 +475,28 @@ mod tests {
 
     #[test]
     fn toml_dataset_and_output_directory_apply_when_absent_from_cli() -> anyhow::Result<()> {
-        // `--dataset` is required by clap, so it is always explicit; only the
-        // optional output directory can be sourced from the file.
         let matches = train_matches(&["typed-lm-trainer", "train", "--dataset", "cli.jsonl"])?;
         let configuration =
             configuration("[dataset]\npath = \"file.jsonl\"\n[run]\noutput_directory = \"out\"\n")?;
         let resolved = resolve_train_arguments(&matches, &configuration)?;
-        assert_eq!(resolved.dataset.to_string_lossy(), "cli.jsonl");
+        assert_eq!(
+            resolved
+                .dataset
+                .as_deref()
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            "cli.jsonl"
+        );
         assert_eq!(resolved.output_directory.to_string_lossy(), "out");
+        Ok(())
+    }
+
+    #[test]
+    fn toml_dataset_path_fills_an_absent_cli_flag() -> anyhow::Result<()> {
+        let matches = train_matches(&["typed-lm-trainer", "train"])?;
+        let configuration = configuration("[dataset]\npath = \"file.jsonl\"\n")?;
+        let resolved = resolve_train_arguments(&matches, &configuration)?;
+        assert_eq!(resolved.dataset_path()?.to_string_lossy(), "file.jsonl");
         Ok(())
     }
 
@@ -526,6 +581,17 @@ mod tests {
         // The untouched keys keep their defaults.
         assert!((resolved.embedding_std - 0.02).abs() < 1e-12);
         assert!((resolved.bias_value - 0.0).abs() < 1e-12);
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_train_arguments_populates_the_initialization_configuration() -> anyhow::Result<()> {
+        let matches = train_matches(&["typed-lm-trainer", "train", "--dataset", "data"])?;
+        let configuration =
+            configuration("[initialization]\ninitializer_range = 0.07\nbias_value = 0.5\n")?;
+        let resolved = resolve_train_arguments(&matches, &configuration)?;
+        assert!((resolved.initialization.initializer_range - 0.07).abs() < 1e-12);
+        assert!((resolved.initialization.bias_value - 0.5).abs() < 1e-12);
         Ok(())
     }
 

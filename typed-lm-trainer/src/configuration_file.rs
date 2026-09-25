@@ -80,6 +80,8 @@ pub struct ModelSection {
     pub num_hidden_layers: Option<usize>,
     /// Number of query attention heads.
     pub num_attention_heads: Option<usize>,
+    /// Explicit head dimension (defaults to `hidden_size / num_attention_heads`).
+    pub head_dim: Option<usize>,
     /// Number of key/value attention heads (grouped-query attention).
     pub num_key_value_heads: Option<usize>,
     /// Maximum supported sequence length.
@@ -90,6 +92,20 @@ pub struct ModelSection {
     pub rms_norm_eps: Option<f64>,
     /// Whether the input and output embeddings share weights.
     pub tie_word_embeddings: Option<bool>,
+    /// Whether the attention projections carry biases.
+    pub attention_bias: Option<bool>,
+    /// Sliding-window attention size, when the family uses it.
+    pub sliding_window: Option<usize>,
+    /// Gemma3 global/local attention alternation pattern.
+    pub sliding_window_pattern: Option<usize>,
+    /// Gemma3 local rotary embedding base frequency.
+    pub rope_local_base_frequency: Option<f64>,
+    /// Gemma2/Gemma3 attention scaling denominator.
+    pub query_pre_attention_scalar: Option<usize>,
+    /// Gemma2/Gemma3 `final_logit_softcapping`.
+    pub logit_softcapping: Option<f64>,
+    /// Gemma2/Gemma3 `attn_logit_softcapping`.
+    pub attention_logit_softcapping: Option<f64>,
 }
 
 /// Initialization section: weight initializers for from-scratch training.

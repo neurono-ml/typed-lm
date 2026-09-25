@@ -415,7 +415,13 @@ impl ParallelQuantizedQwen2 {
             query_pre_attention_scalar: None,
             rms_norm_unit_offset: false,
             embedding_scale: None,
+            hidden_activation: ParallelModelConfig::default_hidden_activation(
+                ModelArchitecture::Qwen2,
+            ),
             rope_local_base_frequency: None,
+            gemma_block_layout: false,
+            per_head_query_key_norm: false,
+            sliding_window_pattern: 0,
         })
     }
 
