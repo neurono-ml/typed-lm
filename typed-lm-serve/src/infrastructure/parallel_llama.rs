@@ -22,7 +22,7 @@ use candle_nn::attention::{flash_attn as cpu_flash_attention, AttnMask};
 use candle_nn::{embedding, rotary_emb, Embedding, Module, VarBuilder};
 use candle_transformers::models::llama::{Llama3RopeConfig, Llama3RopeType};
 use candle_transformers::models::with_tracing::{linear_b, linear_no_bias, Linear};
-use candle_transformers::utils::{build_causal_mask, repeat_kv};
+use candle_transformers::utils::repeat_kv;
 
 use typed_lm_common::model_config::ParallelModelConfig;
 
@@ -79,13 +79,15 @@ impl ConfiguredRmsNorm {
 /// Key/value cache with public batch broadcasting.
 #[derive(Debug, Clone)]
 pub struct ParallelCache {
-    masks: HashMap<(usize, usize), Tensor>,
+    masks: HashMap<(usize, usize, Option<usize>), Tensor>,
     use_key_value_cache: bool,
     key_values: Vec<Option<(Tensor, Tensor)>>,
-    cos: Tensor,
-    sin: Tensor,
+    /// Rotary (cos, sin) tables, one entry per layer (Gemma3 alternates a local
+    /// and a global base frequency).
+    rotary: Vec<(Tensor, Tensor)>,
+    /// Sliding-window size per layer (`None` = full global attention).
+    sliding_windows: Vec<Option<usize>>,
     device: Device,
-    sliding_window: Option<usize>,
 }
 
 fn default_inverse_frequencies(config: &ParallelModelConfig) -> Vec<f32> {
@@ -98,14 +100,33 @@ fn default_inverse_frequencies(config: &ParallelModelConfig) -> Vec<f32> {
         .collect()
 }
 
+/// Builds the rotary (cos, sin) tables from raw inverse frequencies.
+fn rotary_tables(
+    inverse_frequencies: &[f32],
+    positions: usize,
+    dtype: DType,
+    device: &Device,
+) -> Result<(Tensor, Tensor)> {
+    let theta = Tensor::new(inverse_frequencies, device)?;
+    let index_theta = Tensor::arange(0, positions as u32, device)?
+        .to_dtype(DType::F32)?
+        .reshape((positions, 1))?
+        .matmul(&theta.reshape((1, theta.elem_count()))?)?;
+    Ok((
+        index_theta.cos()?.to_dtype(dtype)?,
+        index_theta.sin()?.to_dtype(dtype)?,
+    ))
+}
+
 impl ParallelCache {
-    /// Builds an empty cache, precomputing the rotary embeddings.
+    /// Builds an empty cache, precomputing the per-layer rotary embeddings.
     pub fn new(
         use_key_value_cache: bool,
         dtype: DType,
         config: &ParallelModelConfig,
         device: &Device,
     ) -> Result<Self> {
+        let positions = config.max_position_embeddings;
         let inverse_frequencies = match &config.rope_scaling {
             None
             | Some(Llama3RopeConfig {
@@ -137,37 +158,58 @@ impl ParallelCache {
                     .collect::<Vec<_>>()
             }
         };
-        let theta = Tensor::new(inverse_frequencies.as_slice(), device)?;
-        let index_theta = Tensor::arange(0, config.max_position_embeddings as u32, device)?
-            .to_dtype(DType::F32)?
-            .reshape((config.max_position_embeddings, 1))?
-            .matmul(&theta.reshape((1, theta.elem_count()))?)?;
-        let cos = index_theta.cos()?.to_dtype(dtype)?;
-        let sin = index_theta.sin()?.to_dtype(dtype)?;
+        let global_tables = rotary_tables(&inverse_frequencies, positions, dtype, device)?;
+        let local_tables = match config.rope_local_base_frequency {
+            Some(frequency) => {
+                let head_dimension = config.head_dimension();
+                let local_inverse_frequencies: Vec<f32> = (0..head_dimension)
+                    .step_by(2)
+                    .map(|index| 1f32 / frequency.powf(index as f64 / head_dimension as f64) as f32)
+                    .collect();
+                Some(rotary_tables(
+                    &local_inverse_frequencies,
+                    positions,
+                    dtype,
+                    device,
+                )?)
+            }
+            None => None,
+        };
+        let windows = config.window_per_layer();
+        let rotary = (0..config.num_hidden_layers)
+            .map(|index| match &local_tables {
+                Some(local) if config.uses_local_rope(index) => local.clone(),
+                _ => global_tables.clone(),
+            })
+            .collect();
         Ok(Self {
             masks: HashMap::new(),
             use_key_value_cache,
             key_values: vec![None; config.num_hidden_layers],
-            cos,
-            sin,
+            rotary,
+            sliding_windows: windows,
             device: device.clone(),
-            sliding_window: config.sliding_window,
         })
     }
 
-    fn mask(&mut self, sequence_length: usize, index_position: usize) -> Result<Tensor> {
+    fn mask(
+        &mut self,
+        sequence_length: usize,
+        index_position: usize,
+        window: Option<usize>,
+    ) -> Result<Tensor> {
         let key_value_length = index_position + sequence_length;
-        if let Some(mask) = self.masks.get(&(sequence_length, key_value_length)) {
+        if let Some(mask) = self.masks.get(&(sequence_length, key_value_length, window)) {
             return Ok(mask.clone());
         }
-        let mask = match self.sliding_window {
+        let mask = match window {
             Some(window) => {
                 build_causal_window_mask(sequence_length, index_position, window, &self.device)?
             }
-            None => build_causal_mask(sequence_length, index_position, &self.device)?,
+            None => build_causal_additive_mask(sequence_length, index_position, &self.device)?,
         };
         self.masks
-            .insert((sequence_length, key_value_length), mask.clone());
+            .insert((sequence_length, key_value_length, window), mask.clone());
         Ok(mask)
     }
 
@@ -209,10 +251,20 @@ struct ParallelAttention {
     max_position_embeddings: usize,
     attention_scale: f64,
     attention_logit_softcapping: Option<f64>,
+    /// Per-head query normalization (Qwen3/Gemma3).
+    query_norm: Option<ConfiguredRmsNorm>,
+    /// Per-head key normalization (Qwen3/Gemma3).
+    key_norm: Option<ConfiguredRmsNorm>,
     rotation_span: tracing::Span,
     span: tracing::Span,
 }
 
+/// Fills masked positions with `on_true` (boolean condition mask).
+///
+/// Used only by the test-only reference attention, where the condition is the
+/// `u8` causal mask from `build_causal_mask`. The production path uses the
+/// additive [`build_causal_window_mask`]/[`build_causal_additive_mask`].
+#[cfg(test)]
 fn masked_fill(on_false: &Tensor, mask: &Tensor, on_true: f32) -> Result<Tensor> {
     let shape = mask.shape();
     let on_true = Tensor::new(on_true, on_false.device())?.broadcast_as(shape.dims())?;
@@ -240,6 +292,25 @@ fn build_causal_window_mask(
         let absolute_query = query + index_position;
         for key in 0..key_value_length {
             if key > absolute_query || key + window < absolute_query {
+                values[query * key_value_length + key] = f32::NEG_INFINITY;
+            }
+        }
+    }
+    Tensor::from_vec(values, (sequence_length, key_value_length), device)
+}
+
+/// Builds the plain causal additive mask (no sliding window).
+fn build_causal_additive_mask(
+    sequence_length: usize,
+    index_position: usize,
+    device: &Device,
+) -> Result<Tensor> {
+    let key_value_length = index_position + sequence_length;
+    let mut values = vec![0f32; sequence_length * key_value_length];
+    for query in 0..sequence_length {
+        let absolute_query = query + index_position;
+        for key in 0..key_value_length {
+            if key > absolute_query {
                 values[query * key_value_length + key] = f32::NEG_INFINITY;
             }
         }
@@ -311,12 +382,16 @@ impl ParallelAttention {
         &self,
         hidden: &Tensor,
         index_position: usize,
+        block_index: usize,
         cache: &ParallelCache,
     ) -> Result<Tensor> {
         let _enter = self.rotation_span.enter();
         let (_batch, _heads, sequence_length, _head_dimension) = hidden.dims4()?;
-        let cos = cache.cos.narrow(0, index_position, sequence_length)?;
-        let sin = cache.sin.narrow(0, index_position, sequence_length)?;
+        let (cos, sin) = cache.rotary.get(block_index).ok_or_else(|| {
+            candle_core::Error::Msg("rotary table index out of range".to_string())
+        })?;
+        let cos = cos.narrow(0, index_position, sequence_length)?;
+        let sin = sin.narrow(0, index_position, sequence_length)?;
         rotary_emb::rope(hidden, &cos, &sin)
     }
 
@@ -360,8 +435,18 @@ impl ParallelAttention {
             ))?
             .transpose(1, 2)?;
 
-        let query = self.apply_rotary_embedding(&query, index_position, cache)?;
-        let mut key = self.apply_rotary_embedding(&key, index_position, cache)?;
+        // Qwen3/Gemma3 normalize query and key per head before RoPE.
+        let query = match &self.query_norm {
+            Some(norm) => norm.forward(&query)?,
+            None => query,
+        };
+        let key = match &self.key_norm {
+            Some(norm) => norm.forward(&key)?,
+            None => key,
+        };
+
+        let query = self.apply_rotary_embedding(&query, index_position, block_index, cache)?;
+        let mut key = self.apply_rotary_embedding(&key, index_position, block_index, cache)?;
 
         if cache.use_key_value_cache {
             if let Some((cached_keys, cached_values)) = &cache.key_values[block_index] {
@@ -401,9 +486,10 @@ impl ParallelAttention {
         // families therefore fall back to the generic masked path below. The
         // result layout matches the standard path: (batch, heads, sequence,
         // head_dim).
+        let layer_window = cache.sliding_windows.get(block_index).copied().flatten();
         let fused_cpu_path_is_possible = query.device().is_cpu()
             && self.attention_logit_softcapping.is_none()
-            && cache.sliding_window.is_none();
+            && layer_window.is_none();
         if fused_cpu_path_is_possible {
             let query_in_sequence_layout = query.transpose(1, 2)?.contiguous()?;
             let key_in_sequence_layout = key.transpose(1, 2)?.contiguous()?;
@@ -433,10 +519,12 @@ impl ParallelAttention {
         let attention = if sequence_length == 1 {
             attention
         } else {
+            // `cache.mask` is an additive mask (`0.0` keep, `NEG_INFINITY` drop);
+            // adding it is equivalent to the upstream `broadcast_add(mask)`.
             let mask = cache
-                .mask(sequence_length, index_position)?
+                .mask(sequence_length, index_position, layer_window)?
                 .broadcast_as(attention.shape())?;
-            masked_fill(&attention, &mask, f32::NEG_INFINITY)?
+            attention.broadcast_add(&mask)?
         };
         let attention = candle_nn::ops::softmax_last_dim(&attention)?;
         let output = attention
@@ -484,7 +572,7 @@ impl ParallelAttention {
             output_projection: projection(
                 query_size,
                 input_size,
-                false,
+                config.output_projection_bias(),
                 variable_builder.pp("o_proj"),
             )?,
             num_attention_heads: config.num_attention_heads,
@@ -493,10 +581,30 @@ impl ParallelAttention {
             max_position_embeddings: config.max_position_embeddings,
             attention_scale,
             attention_logit_softcapping: config.attention_logit_softcapping,
+            query_norm: load_per_head_norm(&variable_builder, config, "q_norm", head_dimension)?,
+            key_norm: load_per_head_norm(&variable_builder, config, "k_norm", head_dimension)?,
             rotation_span,
             span,
         })
     }
+}
+
+/// Loads the optional per-head query/key norm (`Qwen3`/`Gemma3`).
+fn load_per_head_norm(
+    variable_builder: &VarBuilder,
+    config: &ParallelModelConfig,
+    name: &str,
+    head_dimension: usize,
+) -> Result<Option<ConfiguredRmsNorm>> {
+    if !config.per_head_query_key_norm {
+        return Ok(None);
+    }
+    Ok(Some(ConfiguredRmsNorm::new(
+        head_dimension,
+        config.rms_norm_eps,
+        config.rms_norm_unit_offset,
+        variable_builder.pp(name),
+    )?))
 }
 
 /// Loads a linear projection with or without bias.
@@ -522,14 +630,15 @@ struct ParallelMlp {
     gate_projection: Linear,
     up_projection: Linear,
     down_projection: Linear,
+    activation: candle_nn::Activation,
     span: tracing::Span,
 }
 
 impl ParallelMlp {
     fn forward(&self, hidden: &Tensor) -> Result<Tensor> {
         let _enter = self.span.enter();
-        let hidden = (candle_nn::ops::silu(&self.gate_projection.forward(hidden)?)?
-            * self.up_projection.forward(hidden)?)?;
+        let gate = self.gate_projection.forward(hidden)?;
+        let hidden = (self.activation.forward(&gate)? * self.up_projection.forward(hidden)?)?;
         self.down_projection.forward(&hidden)
     }
 
@@ -551,6 +660,7 @@ impl ParallelMlp {
                 config.hidden_size,
                 variable_builder.pp("down_proj"),
             )?,
+            activation: config.hidden_activation,
             span,
         })
     }
@@ -561,6 +671,10 @@ struct ParallelBlock {
     input_norm: ConfiguredRmsNorm,
     attention: ParallelAttention,
     post_attention_norm: ConfiguredRmsNorm,
+    /// Gemma2/Gemma3 pre-feed-forward norm; `None` for the Llama layout.
+    pre_feedforward_norm: Option<ConfiguredRmsNorm>,
+    /// Gemma2/Gemma3 post-feed-forward norm; `None` for the Llama layout.
+    post_feedforward_norm: Option<ConfiguredRmsNorm>,
     mlp: ParallelMlp,
     span: tracing::Span,
 }
@@ -576,14 +690,26 @@ impl ParallelBlock {
         let _enter = self.span.enter();
         let residual = hidden;
         let hidden = self.input_norm.forward(hidden)?;
-        let hidden = (self
+        let attended = self
             .attention
-            .forward(&hidden, index_position, block_index, cache)?
-            + residual)?;
-        let residual = &hidden;
-        self.mlp
-            .forward(&self.post_attention_norm.forward(&hidden)?)?
-            + residual
+            .forward(&hidden, index_position, block_index, cache)?;
+        match (&self.pre_feedforward_norm, &self.post_feedforward_norm) {
+            // Gemma2/Gemma3 four-normalization layout.
+            (Some(pre_feedforward_norm), Some(post_feedforward_norm)) => {
+                let hidden = (self.post_attention_norm.forward(&attended)? + residual)?;
+                let residual = &hidden;
+                let fed = self.mlp.forward(&pre_feedforward_norm.forward(&hidden)?)?;
+                post_feedforward_norm.forward(&fed)? + residual
+            }
+            // Llama/Qwen/Mistral two-normalization layout.
+            _ => {
+                let hidden = (attended + residual)?;
+                let residual = &hidden;
+                self.mlp
+                    .forward(&self.post_attention_norm.forward(&hidden)?)?
+                    + residual
+            }
+        }
     }
 
     fn load(variable_builder: VarBuilder, config: &ParallelModelConfig) -> Result<Self> {
@@ -600,10 +726,30 @@ impl ParallelBlock {
             config.rms_norm_unit_offset,
             variable_builder.pp("post_attention_layernorm"),
         )?;
+        let (pre_feedforward_norm, post_feedforward_norm) = if config.gemma_block_layout {
+            (
+                Some(ConfiguredRmsNorm::new(
+                    config.hidden_size,
+                    config.rms_norm_eps,
+                    config.rms_norm_unit_offset,
+                    variable_builder.pp("pre_feedforward_layernorm"),
+                )?),
+                Some(ConfiguredRmsNorm::new(
+                    config.hidden_size,
+                    config.rms_norm_eps,
+                    config.rms_norm_unit_offset,
+                    variable_builder.pp("post_feedforward_layernorm"),
+                )?),
+            )
+        } else {
+            (None, None)
+        };
         Ok(Self {
             input_norm,
             attention: ParallelAttention::load(variable_builder.pp("self_attn"), config)?,
             post_attention_norm,
+            pre_feedforward_norm,
+            post_feedforward_norm,
             mlp: ParallelMlp::load(variable_builder.pp("mlp"), config)?,
             span,
         })
@@ -724,6 +870,7 @@ impl ParallelLlama {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use candle_transformers::utils::build_causal_mask;
 
     #[test]
     fn default_inverse_frequencies_have_head_dimension_halved() -> anyhow::Result<()> {
