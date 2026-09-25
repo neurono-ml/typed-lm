@@ -60,7 +60,7 @@ Every flag also reads an environment variable; precedence is
 | `--tokenizer-file` | `TOKENIZER_FILE` | next to the weights |
 | `--config-file` | `CONFIG_FILE` | next to the weights |
 | `--context-path` | `CONTEXT_PATH` | missing = empty context |
-| `--served-model-name` | `SERVED_MODEL_NAME` | `jev-latest` |
+| `--served-model-name` | `SERVED_MODEL_NAME` | `typed-lm` |
 | `--model-dtype` | `MODEL_DTYPE` | `auto` (F32 on CPU, F16 on CUDA/Metal) |
 | `--session-cache-entries` | `SESSION_CACHE_ENTRIES` | `16` |
 | `--session-cache-tokens` | `SESSION_CACHE_TOKENS` | `32768` |

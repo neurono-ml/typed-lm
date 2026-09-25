@@ -10,7 +10,7 @@ Base URL (default): `http://127.0.0.1:8080`.
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/v1/systemone` | Evaluate a `state` against typed questions. |
-| `GET` | `/v1/models` | List the served model and its `jev-` alias. |
+| `GET` | `/v1/models` | List the served model. |
 | `GET` | `/health` | Readiness and model startup time. |
 | `GET` | `/health/live` | Liveness; independent of the model. |
 
@@ -18,7 +18,7 @@ Base URL (default): `http://127.0.0.1:8080`.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `model` | string | yes | Served name or any `jev-` alias |
+| `model` | string | yes | Served name (default `typed-lm`) |
 | `state` | string or JSON | yes | The facts of the case |
 | `questions` | object | yes | Non-empty map of question name to question |
 
@@ -67,9 +67,9 @@ Error envelope:
 ```json
 {
   "object": "list",
-  "data": [{ "id": "jev-latest", "object": "model", "owned_by": "typed-lm" }],
+  "data": [{ "id": "typed-lm", "object": "model", "owned_by": "typed-lm" }],
   "models": [
-    { "name": "jev-latest", "description": "Jev-compatible model served from context '...'", "release_date": "unknown" }
+    { "name": "typed-lm", "description": "typed-lm model served from context '...'", "release_date": "unknown" }
   ]
 }
 ```

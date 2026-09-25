@@ -82,7 +82,7 @@ curl -s http://127.0.0.1:8080/v1/systemone \
 
 ```json
 {
-  "model": "jev-latest",
+  "model": "typed-lm",
   "answers": {
     "refund_eligible": { "type": "noul", "noul": 0.87 },
     "responsible_department": {

@@ -47,7 +47,7 @@ distribution for `choice`, and an expected value with a legend for `score`.
 
 ```json
 {
-  "model": "jev-latest",
+  "model": "typed-lm",
   "answers": {
     "refund_eligible": { "type": "noul", "noul": 0.87 },
     "responsible_department": {

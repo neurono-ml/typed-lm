@@ -38,7 +38,7 @@ flowchart LR
 
 ```json
 {
-  "model": "jev-latest",
+  "model": "typed-lm",
   "state": "I was charged twice for the same order and need one charge reversed.",
   "questions": {
     "intent": {

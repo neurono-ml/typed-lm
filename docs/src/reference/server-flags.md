@@ -13,7 +13,7 @@ Every flag also reads an environment variable; precedence is
 | `--tokenizer-file` | `TOKENIZER_FILE` | next to the weights | Tokenizer override |
 | `--config-file` | `CONFIG_FILE` | next to the weights | Config override |
 | `--context-path` | `CONTEXT_PATH` | missing = empty context | System context file |
-| `--served-model-name` | `SERVED_MODEL_NAME` | `jev-latest` | Name clients request |
+| `--served-model-name` | `SERVED_MODEL_NAME` | `typed-lm` | Name clients request |
 | `--model-dtype` | `MODEL_DTYPE` | `auto` | `auto` (F32 CPU, F16 CUDA/Metal) |
 | `--session-cache-entries` | `SESSION_CACHE_ENTRIES` | `16` | Max cached prefixes |
 | `--session-cache-tokens` | `SESSION_CACHE_TOKENS` | `32768` | Max cached tokens |

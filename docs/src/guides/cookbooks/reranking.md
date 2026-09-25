@@ -9,7 +9,7 @@ reach an answering model, they must be re-ranked by relevance to the query.
 
 ```json
 {
-  "model": "jev-latest",
+  "model": "typed-lm",
   "state": {
     "query": "What is the refund window for damaged items?",
     "passage": "Defective or damaged items are eligible for a full refund within 30 days of delivery."

@@ -44,7 +44,7 @@ flowchart LR
 
 ```json
 {
-  "model": "jev-latest",
+  "model": "typed-lm",
   "state": "The user asks whether the annual plan can be cancelled mid-cycle.",
   "questions": {
     "intent": {

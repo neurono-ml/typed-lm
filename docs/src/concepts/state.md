@@ -13,7 +13,7 @@ The `state` field accepts two forms:
 
 ```json
 {
-  "model": "jev-latest",
+  "model": "typed-lm",
   "state": "Order #7710 arrived with a smashed box and a cracked vase inside.",
   "questions": {
     "refund_eligible": {

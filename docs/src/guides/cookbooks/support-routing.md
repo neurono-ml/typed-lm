@@ -10,7 +10,7 @@ downstream system acts.
 
 ```json
 {
-  "model": "jev-latest",
+  "model": "typed-lm",
   "state": "Order #7710 arrived with a smashed box and a cracked vase inside. Delivery was 3 days ago and the customer asks what to do next.",
   "questions": {
     "refund_eligible": {
@@ -39,7 +39,7 @@ downstream system acts.
 
 ```json
 {
-  "model": "jev-latest",
+  "model": "typed-lm",
   "answers": {
     "refund_eligible": { "type": "noul", "noul": 0.87 },
     "responsible_department": {

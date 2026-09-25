@@ -12,7 +12,7 @@ Base URL (default): `http://127.0.0.1:8080`.
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/v1/systemone` | Evaluate a `state` against one or more typed questions. |
-| `GET` | `/v1/models` | List the served model and its `jev-` alias. |
+| `GET` | `/v1/models` | List the served model. |
 | `GET` | `/health` | Readiness plus the model startup time. |
 | `GET` | `/health/live` | Liveness; independent of the model. |
 
@@ -50,7 +50,7 @@ request.
 
 ```json
 {
-  "model": "jev-latest",
+  "model": "typed-lm",
   "state": "Order #7710 arrived with a smashed box and a cracked vase inside. Delivery was 3 days ago and the customer asks what to do next.",
   "questions": {
     "refund_eligible": {
@@ -77,8 +77,8 @@ request.
 
 Field rules:
 
-- `model` — the served model name (see `--served-model-name`) or any alias with
-  the `jev-` prefix.
+- `model` — the served model name (see `--served-model-name`), which defaults to
+  `typed-lm`.
 - `state` — free text or a structured JSON value.
 - `questions` — must not be empty. `choice` requires at least one criterion;
   `score` requires between 2 and 10 levels; `noul` always has a yes/no decision.
@@ -87,7 +87,7 @@ Field rules:
 
 ```json
 {
-  "model": "jev-latest",
+  "model": "typed-lm",
   "answers": {
     "refund_eligible": { "type": "noul", "noul": 0.87 },
     "responsible_department": {
@@ -133,10 +133,10 @@ Errors use the envelope `{"error": {"message": "..."}}`.
 ```json
 {
   "object": "list",
-  "data": [{ "id": "jev-latest", "object": "model", "owned_by": "typed-lm" }],
+  "data": [{ "id": "typed-lm", "object": "model", "owned_by": "typed-lm" }],
   "models": [
     {
-      "name": "jev-latest",
+      "name": "typed-lm",
       "description": "Jev-compatible model served from context '...'",
       "release_date": "unknown"
     }

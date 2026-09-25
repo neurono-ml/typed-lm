@@ -40,7 +40,7 @@ flowchart LR
 
 ```json
 {
-  "model": "jev-latest",
+  "model": "typed-lm",
   "state": "A pitch for a subscription service for weekly meal planning.",
   "questions": {
     "market": {

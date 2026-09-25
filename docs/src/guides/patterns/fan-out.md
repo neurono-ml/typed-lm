@@ -34,7 +34,7 @@ flowchart LR
 
 ```json
 {
-  "model": "jev-latest",
+  "model": "typed-lm",
   "state": "The customer reports a defective medical device that a dependant uses daily.",
   "questions": {
     "refund_eligible": {

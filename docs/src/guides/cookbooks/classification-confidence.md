@@ -9,7 +9,7 @@ should report a broader parent category rather than a wrong leaf.
 
 ```json
 {
-  "model": "jev-latest",
+  "model": "typed-lm",
   "state": "The filing describes a quarterly dividend distribution to common shareholders.",
   "questions": {
     "category": {
