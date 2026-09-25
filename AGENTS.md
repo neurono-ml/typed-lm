@@ -1,68 +1,75 @@
-# Diretrizes para Agentes de IA (AGENTS.md)
+# Guidelines for AI Agents (AGENTS.md)
 
-## 1. Contexto do Projeto
-Este projeto é um monorepo Rust de inferência determinística e treino, focado em MLOps (parte do ecossistema Sciencekit). Ele substitui a geração de texto autorregressiva de LLMs tradicionais por uma arquitetura de classificação de passagem única (*single forward pass*), utilizando modelos densos das famílias **Llama, Qwen2, Qwen3, Mistral, Gemma, Gemma2 e Gemma3** (ex: Manacá-1B, Qwen2.5-1.5B-Instruct, modelo padrão), detectadas automaticamente pelo `model_type` do `config.json`, através do framework Hugging Face `candle`. Famílias MoE/MLA (`mixtral`, `qwen3_moe`, `deepseek_v2`, `deepseek_v3`) são rejeitadas com mensagem acionável.
+## 1. Project Context
+This project is a Rust monorepo for deterministic inference and training, focused on MLOps. It replaces the autoregressive text generation of traditional LLMs with a single-forward-pass classification architecture, using dense models from the **Llama, Qwen2, Qwen3, Mistral, Gemma, Gemma2 and Gemma3** families (for example Manacá-1B, Qwen2.5-1.5B-Instruct, the default model), detected automatically from the `model_type` field in `config.json` through the Hugging Face `candle` framework. MoE/MLA families (`mixtral`, `qwen3_moe`, `deepseek_v2`, `deepseek_v3`) are rejected with an actionable message.
 
-O objetivo é fornecer uma API de latência ultrabaixa para roteamento semântico, estritamente compatível com a especificação da API do **Jev** (TypeSafe AI), além de um treinador LoRA/QLoRA/full/from-scratch e de quantização (FP8/FP4) cujos artefatos o servidor consome diretamente.
+The goal is to provide an ultra-low-latency API for semantic routing, strictly compatible with the **Jev** (TypeSafe AI) API specification, plus a LoRA/QLoRA/full/from-scratch trainer and a quantization (FP8/FP4) pipeline whose artifacts the server consumes directly.
 
-## 2. Arquitetura e Stack Tecnológico
-*   **Linguagem:** Rust (Edition 2021).
-*   **Workspace:** `typed-lm` com três membros:
-    *   `typed-lm-common` (lib) — contrato Jev, labels, rendering de prompt, detecção de checkpoint e de arquitetura, *traits* de arquitetura densa, device/dtype (`PrecisionPolicy`), quantização (FP8/FP4), tokenizer.
-    *   `typed-lm-serve` (bin) — servidor Actix; binário **sem subcomando** (flags no topo).
-    *   `typed-lm-trainer` (bin+lib) — subcomandos `train` e `quantize`.
-*   **Servidor Web:** `actix-web` com concorrência assíncrona gerenciada pelo `tokio`.
-*   **Motor de Inferência:** `candle-core`, `candle-nn`, `candle-transformers`. O forward denso parametrizado cobre as sete famílias densas (Llama, Qwen2, Qwen3, Mistral, Gemma, Gemma2, Gemma3); o caminho GGUF/GGML-quantizado implementa **apenas Qwen2** e rejeita as demais arquiteturas no *load*.
-*   **Métodos de treino (`train`):** `--method lora|qlora|full|from-scratch`. `lora`/`qlora` treinam adaptadores sobre um *checkpoint* congelado; `full` ajusta todos os parâmetros a partir de um *checkpoint*; `from-scratch` inicializa todos os parâmetros aleatoriamente (determinístico por `--seed`). Uma configuração TOML opcional (`--configuration-file`) fornece qualquer parâmetro com precedência **CLI > TOML > default**; `from-scratch` exige geometria explícita (`[model]` ou flags) e um `tokenizer.json` (`[tokenizer] file` ou `--tokenizer-file`).
-*   **Layout de Módulos:**
-    *   `typed-lm-common/src/architecture_traits.rs` — capacidades por família densa (bias de atenção, `head_dim` explícito, *sliding window*, *logit soft-capping*, offset do RMSNorm, escala de *embeddings*, RoPE local).
-    *   `typed-lm-serve/src/api/` — DTOs de resposta, erros, rotas e *handlers* do Actix.
-    *   `typed-lm-serve/src/domain/` — a *trait* `Evaluator`/`MockEvaluator`.
-    *   `typed-lm-serve/src/infrastructure/` — Candle: carregamento de checkpoint, tokenizador, forward paralelo vendorizado e o avaliador real.
-    *   `typed-lm-serve/src/config/`, `typed-lm-serve/src/bootstrap/` — CLI e inicialização/servidor.
-    *   `typed-lm-trainer/src/{dataset,model,training,quantization}/` — pipeline de treino e PTQ; `model/` inclui `initialization`, `trainable_dense`, `trainable_full`, `trainable_linear` e `trainable_rms_norm`, além dos adaptadores LoRA.
-    *   `typed-lm-trainer/src/configuration_file.rs`, `typed-lm-trainer/src/configuration_resolution.rs` — schema TOML e resolução **CLI > TOML > default**.
-*   **Gerenciamento de Estado:** O modelo, o tokenizador e o `base_cache` (KV-Cache do prompt de sistema) devem ser carregados uma única vez na inicialização da aplicação e compartilhados com os *workers* do `actix-web` através de `actix_web::web::Data`. O cache mutável por requisição deve ser sempre um clone do cache base.
-*   **Formatos suportados:** safetensors (único ou *sharded*), GGUF (denso e GGML-quantizado, ex.: `Q4_K_M`), PyTorch `.pth`/`.bin` e NumPy `.npz`. **FP8 (`F8_E4M3`/`F8_E5M2`) e FP4 (MXFP4) são suportados via dequantização no load** para denso F32; `GPTQ`/`AWQ` são rejeitados com mensagem clara.
-*   **CPU:** atenção *flash* fundida do `candle-nn` é usada automaticamente na CPU (mantém GQA agrupado); `--features mkl` habilita BLAS Intel MKL. GGUF `Q4_K_M` é o modo CPU recomendado.
-*   **GPU:** `--features cuda` (F16 automático). O devcontainer instala o toolkit CUDA via *feature* `nvidia-cuda` e reserva a GPU no `docker-compose.yml`; o host precisa apenas do driver e do NVIDIA container toolkit.
-*   **Precisão de treino:** `PrecisionPolicy { master: F32, compute: F32(CPU)/BF16(GPU), reduction: F32 }` — peso-mestre e otimizador em F32; BF16 apenas como compute em GPU. Paridade funcional CPU/CUDA, não de velocidade.
-*   **Cache de sessão:** o prefixo `system + state` é retido num cache LRU (por hash canônico do state, limitado por nº de entradas e total de tokens). O valor guardado é sempre um clone; o cache retido nunca é mutado.
+## 2. Architecture and Technology Stack
+*   **Language:** Rust (Edition 2021).
+*   **Workspace:** `typed-lm` with three members:
+    *   `typed-lm-common` (lib) — Jev contract, labels, prompt rendering, checkpoint and architecture detection, dense-architecture traits, device/dtype (`PrecisionPolicy`), quantization (FP8/FP4), tokenizer.
+    *   `typed-lm-serve` (bin) — Actix server; a binary **with no subcommand** (top-level flags).
+    *   `typed-lm-trainer` (bin+lib) — subcommands `train` and `quantize`.
+*   **Web Server:** `actix-web` with asynchronous concurrency managed by `tokio`.
+*   **Inference Engine:** `candle-core`, `candle-nn`, `candle-transformers`. The parametrized dense forward covers all seven dense families (Llama, Qwen2, Qwen3, Mistral, Gemma, Gemma2, Gemma3); the GGUF/GGML-quantized path implements **only Qwen2** and rejects the other architectures at load time.
+*   **Training methods (`train`):** `--method lora|qlora|full|from-scratch`. `lora`/`qlora` train adapters over a frozen checkpoint; `full` tunes every parameter from a checkpoint; `from-scratch` initializes every parameter randomly (deterministic through `--seed`). An optional TOML configuration (`--configuration-file`) supplies any parameter with **CLI > TOML > default** precedence; `from-scratch` requires an explicit geometry (`[model]` or flags) and a `tokenizer.json` (`[tokenizer] file` or `--tokenizer-file`).
+*   **Module Layout:**
+    *   `typed-lm-common/src/architecture_traits.rs` — per-family dense capabilities (attention bias, explicit `head_dim`, sliding window, logit soft-capping, RMSNorm offset, embedding scale, local RoPE).
+    *   `typed-lm-serve/src/api/` — response DTOs, errors, routes and Actix handlers.
+    *   `typed-lm-serve/src/domain/` — the `Evaluator`/`MockEvaluator` trait.
+    *   `typed-lm-serve/src/infrastructure/` — Candle: checkpoint loading, tokenizer, vendored parallel forward and the real evaluator.
+    *   `typed-lm-serve/src/config/`, `typed-lm-serve/src/bootstrap/` — CLI and startup/server.
+    *   `typed-lm-trainer/src/{dataset,model,training,quantization}/` — training and PTQ pipeline; `model/` includes `initialization`, `trainable_dense`, `trainable_full`, `trainable_linear` and `trainable_rms_norm`, plus the LoRA adapters.
+    *   `typed-lm-trainer/src/configuration_file.rs`, `typed-lm-trainer/src/configuration_resolution.rs` — TOML schema and **CLI > TOML > default** resolution.
+*   **State Management:** The model, the tokenizer and the `base_cache` (KV-cache of the system prompt) must be loaded once at application startup and shared with the `actix-web` workers through `actix_web::web::Data`. The per-request mutable cache must always be a clone of the base cache.
+*   **Supported formats:** safetensors (single or sharded), GGUF (dense and GGML-quantized, e.g. `Q4_K_M`), PyTorch `.pth`/`.bin` and NumPy `.npz`. **FP8 (`F8_E4M3`/`F8_E5M2`) and FP4 (MXFP4) are supported via dequantization at load** to dense F32; `GPTQ`/`AWQ` are rejected with a clear message.
+*   **CPU:** the fused `candle-nn` flash attention is used automatically on CPU (keeps GQA grouped); `--features mkl` enables Intel MKL BLAS. GGUF `Q4_K_M` is the recommended CPU mode.
+*   **GPU:** `--features cuda` (automatic F16). The devcontainer installs the CUDA toolkit through the `nvidia-cuda` feature and reserves the GPU in `docker-compose.yml`; the host only needs the driver and the NVIDIA container toolkit.
+*   **Training precision:** `PrecisionPolicy { master: F32, compute: F32(CPU)/BF16(GPU), reduction: F32 }` — master weight and optimizer in F32; BF16 only as compute on GPU. Functional CPU/CUDA parity, not of speed.
+*   **Session cache:** the `system + state` prefix is retained in an LRU cache (by canonical hash of the state, bounded by number of entries and total tokens). The stored value is always a clone; the retained cache is never mutated.
 
-## 3. Contrato de API (Compatibilidade Jev)
-A aplicação não gera texto livre. Ela expõe rotas que retornam tipos estruturados baseados na extração direta de *logits*. A rota principal é `POST /v1/systemone`, que aceita um payload JSON com `model`, `state` e `questions` (mapa de perguntas).
+## 3. API Contract (Jev Compatibility)
+The application does not generate free text. It exposes routes that return structured types based on direct logit extraction. The main route is `POST /v1/systemone`, which accepts a JSON payload with `model`, `state` and `questions` (a map of questions).
 
-Cada pergunta é tipada em um dos formatos abaixo e pode ser combinada na mesma requisição:
+Each question is typed in one of the formats below and can be combined in the same request:
 
-*   **`noul`:** decisão booleana → `{"type": "noul", "noul": 0.0 a 1.0}`.
-*   **`choice`:** seleciona a melhor opção de um conjunto restrito → `{"type": "choice", "choice": "String", "probabilities": {...}, "confidence": 0.0 a 1.0}`.
-*   **`score`:** pontuação contínua mapeada a partir de posições do vocabulário → `{"type": "score", "score": f32, "legend": {...}, "probabilities": {...}, "confidence": 0.0 a 1.0}`.
+*   **`noul`:** boolean decision → `{"type": "noul", "noul": 0.0 to 1.0}`.
+*   **`choice`:** selects the best option from a restricted set → `{"type": "choice", "choice": "String", "probabilities": {...}, "confidence": 0.0 to 1.0}`.
+*   **`score`:** continuous score mapped from vocabulary positions → `{"type": "score", "score": f32, "legend": {...}, "probabilities": {...}, "confidence": 0.0 to 1.0}`.
 
-Complementam a API: `GET /v1/models`, `GET /health` e `GET /health/live`.
+The API is complemented by `GET /v1/models`, `GET /health` and `GET /health/live`.
 
-## 4. Regras de Código (Inquebráveis)
-1.  **Código Sempre em Inglês:** Todo código (variáveis, funções, structs, módulos, comentários e mensagens de commit) deve ser escrito em inglês. Documentação voltada ao usuário (`README.md`, `AGENTS.md`, respostas no chat) pode ser em português.
-2.  **Proibição Absoluta de Abreviações:** O agente **jamais** deve utilizar abreviações em variáveis, funções, structs ou módulos.
-    *   *Errado:* `calc_prob`, `ctx`, `req`, `init_kv`.
-    *   *Correto:* `calculate_probability`, `context`, `request`, `initialize_key_value_cache`.
-3.  **Isolamento de Cache:** O `cache_base` nunca deve ser mutado durante uma requisição de usuário. A rota deve clonar o cache, executar o *forward pass* a partir do comprimento da sequência do sistema (`system_sequence_length`) e descartar o clone ao fim do escopo. O cache de sessão (LRU por hash do state) também só guarda e entrega *clones*; o `cache_base` do contexto e cada prefixo retido permanecem imutáveis.
-4.  **Tratamento de Erros:** Não utilize `unwrap()` ou `expect()` no código de produção. Mapeie os erros do Candle e do Actix para uma struct de erro customizada que retorne um `HttpResponse::InternalServerError` padronizado.
-5.  **Proibição Total de `unwrap()`/`expect()` (inclusive em testes):** Nenhum arquivo em `src/` (incluindo `#[cfg(test)]`, mocks, helpers e exemplos internos) pode conter `.unwrap()`, `.expect(`, `.unwrap_err()` ou `.expect_err()`. Métodos que não causam panic (`unwrap_or`, `unwrap_or_else`, `unwrap_or_default`) são permitidos. Em testes, funções devem retornar `anyhow::Result<()>` (ou `Result<_, EvaluationError>`) e propagar com `?`; casos de erro devem ser verificados com `assert!(result.is_err())` + `let Err(error) = result else { return Ok(()); }`, e valores `Option` com `ok_or_else(|| anyhow::anyhow!(...))?` ou `unwrap_or`/`unwrap_or_default`. Valide com `grep -rn "unwrap()\|\.expect(\|unwrap_err" typed-lm-*/src --include="*.rs"` retornando vazio (vale também para `tests/`).
-6.  **Inicialização Determinística (From-Scratch):** A inicialização de pesos de `--method from-scratch` deve ser reproduzível e **sem nova dependência de RNG**: use o gerador LCG/Box-Muller próprio (`typed-lm-trainer/src/model/initialization.rs`), semeável por `--seed`. O mesmo trio `(config, configuration, seed)` deve produzir tensores idênticos byte a byte. `from-scratch` exige geometria explícita (flags `--architecture`/`--hidden-size`/... ou a seção `[model]` do TOML) e um `tokenizer.json` (`--tokenizer-file` ou `[tokenizer] file`), pois não há *checkpoint* de onde lê-los.
-7.  **Logging Exclusivamente via `tracing`:** É proibido usar `println!`, `eprintln!`, `print!`, `dbg!` ou qualquer macro de impressão direta em `src/` e em `tests/` (incluindo testes, exemplos internos e benchmarks). Todo log deve passar pelo crate `tracing` (`tracing::info!`, `tracing::warn!`, `tracing::error!`, `tracing::debug!`, `tracing::trace!`), com os campos estruturados quando fizer sentido. O `tracing` é inicializado na inicialização da aplicação; o output de teste que precise de visibilidade deve usar um nível de log quando aplicável. Valide com `grep -rn "println!\|eprintln!\|print!\|dbg!" typed-lm-*/src typed-lm-*/tests` retornando vazio.
-8.  **GPU Sempre via Devcontainer:** Toda execução que exija GPU (build com `--features cuda`, testes com `#[ignore]` de CUDA, treino/quantização em GPU, benchmarks de GPU) deve rodar **dentro do devcontainer** (`.devcontainer/`), que reserva a GPU no `docker-compose.yml` e instala o toolkit CUDA. Nunca assuma CUDA no host nem rode `cargo` com `--features cuda` fora do devcontainer. Comandos de CPU (fmt, clippy, `cargo test` padrão) rodam no host normalmente. Para executar algo no devcontainer use os comandos `devcontainer up` / `devcontainer exec` (ou o MCP `devcontainers_*`); o workspace dentro do container é `/workspaces/typed-lm`.
+## 4. Code Rules (Unbreakable)
+1.  **Code and Documentation Always in English (no exception):** **All** content versioned in the repository must be in English — with no exception. This includes:
+    *   **Code:** variables, functions, structs, enums, modules, traits, comments, doc-comments (`///`, `//!`) and `tracing`/error messages.
+    *   **Commit messages** and Pull Request descriptions.
+    *   **Documentation and text files:** `README.md` (root and per crate), every `docs/*.md`, `examples/README.md`, `AGENTS.md`, example files (`*.http`, `*.jsonl`, resource `*.md`), comments in the devcontainer `*.toml`/`*.yml` and any other versioned artifact.
+    *   **Identifiers of example data** (states, questions, answers) used in tests and fixtures.
+    *   The **only** exception is direct chat communication with the maintainer, which may be in Portuguese. None of it may leak into a repository file.
+    *   Before finishing any task, review the touched files for Portuguese text (e.g. `grep -rnE "[àáâãéêíóôõúçÀÁÂÃÉÊÍÓÔÕÚÇ]"` and keywords such as `não`, `para`, `servidor`, `modelo`, `arquivo`, `configuração`, `treino`, `requisição`, `exemplo`) and translate whatever you find.
+    *   When creating a new file, write it directly in English; never translate afterwards.
+2.  **Absolute Ban on Abbreviations:** The agent **must never** use abbreviations in variables, functions, structs or modules.
+    *   *Wrong:* `calc_prob`, `ctx`, `req`, `init_kv`.
+    *   *Correct:* `calculate_probability`, `context`, `request`, `initialize_key_value_cache`.
+3.  **Cache Isolation:** `cache_base` must never be mutated during a user request. The route must clone the cache, run the forward pass from the system sequence length (`system_sequence_length`) and drop the clone at the end of the scope. The session cache (LRU by state hash) also only stores and returns clones; the context `cache_base` and every retained prefix remain immutable.
+4.  **Error Handling:** Do not use `unwrap()` or `expect()` in production code. Map the Candle and Actix errors to a custom error struct that returns a standardized `HttpResponse::InternalServerError`.
+5.  **Total Ban on `unwrap()`/`expect()` (including in tests):** No file under `src/` (including `#[cfg(test)]`, mocks, helpers and internal examples) may contain `.unwrap()`, `.expect(`, `.unwrap_err()` or `.expect_err()`. Methods that do not panic (`unwrap_or`, `unwrap_or_else`, `unwrap_or_default`) are allowed. In tests, functions must return `anyhow::Result<()>` (or `Result<_, EvaluationError>`) and propagate with `?`; error cases must be checked with `assert!(result.is_err())` + `let Err(error) = result else { return Ok(()); }`, and `Option` values with `ok_or_else(|| anyhow::anyhow!(...))?` or `unwrap_or`/`unwrap_or_default`. Validate with `grep -rn "unwrap()\|\.expect(\|unwrap_err" typed-lm-*/src --include="*.rs"` returning empty (also applies to `tests/`).
+6.  **Deterministic Initialization (From-Scratch):** The weight initialization of `--method from-scratch` must be reproducible and **without a new RNG dependency**: use the project's own LCG/Box-Muller generator (`typed-lm-trainer/src/model/initialization.rs`), seedable through `--seed`. The same `(config, configuration, seed)` triple must produce byte-identical tensors. `from-scratch` requires an explicit geometry (`--architecture`/`--hidden-size`/... flags or the TOML `[model]` section) and a `tokenizer.json` (`--tokenizer-file` or `[tokenizer] file`), because there is no checkpoint to read them from.
+7.  **Logging Exclusively via `tracing`:** It is forbidden to use `println!`, `eprintln!`, `print!`, `dbg!` or any direct print macro under `src/` and `tests/` (including tests, internal examples and benchmarks). Every log must go through the `tracing` crate (`tracing::info!`, `tracing::warn!`, `tracing::error!`, `tracing::debug!`, `tracing::trace!`), with structured fields where it makes sense. `tracing` is initialized at application startup; test output that needs visibility must use a log level where applicable. Validate with `grep -rn "println!\|eprintln!\|print!\|dbg!" typed-lm-*/src typed-lm-*/tests` returning empty.
+8.  **GPU Always via Devcontainer:** Every execution that requires a GPU (`--features cuda` build, CUDA `#[ignore]` tests, GPU training/quantization, GPU benchmarks) must run **inside the devcontainer** (`.devcontainer/`), which reserves the GPU in `docker-compose.yml` and installs the CUDA toolkit. Never assume CUDA on the host and never run `cargo` with `--features cuda` outside the devcontainer. CPU commands (fmt, clippy, default `cargo test`) run on the host normally. To run something in the devcontainer use the `devcontainer up` / `devcontainer exec` commands (or the `devcontainers_*` MCP); the workspace inside the container is `/workspaces/typed-lm`.
 
-## 5. Diretrizes de Testes (Obrigatório)
-Nenhum código, rota ou função deve ser gerado sem o respectivo teste automatizado. O agente deve assumir a metodologia TDD (Test-Driven Development) nas suas respostas.
+## 5. Testing Guidelines (Mandatory)
+No code, route or function may be produced without its automated test. The agent must adopt the TDD (Test-Driven Development) methodology in its responses.
 
-1.  **Testes Unitários:** Para a lógica matemática de extração e calibração de probabilidades (Softmax restrito) a partir de tensores simulados (*dummy tensors*). Inclua também testes de equivalência numérica para os caminhos vendorizados: a atenção *flash* da CPU contra uma referência matmul/softmax (com GQA e deslocamento causal) e a tokenização estruturada contra o prompt monolítico.
-2.  **Testes de Integração de API:** Utilize o `actix_web::test` para criar instâncias locais do serviço `App` e garantir que os payloads JSON de entrada e saída correspondam exatamente ao contrato do Jev.
-3.  **Mocks Injetáveis:** Para evitar o download de modelos pesados durante os testes de CI/CD, crie uma abstração (*trait*) para o avaliador. A camada do Actix deve ser testável através de uma estrutura de modelo simulado (*mock*) que devolva *logits* previsíveis.
-4.  **Testes Live (`#[ignore]`):** Casos que exigem pesos reais (equivalência com o upstream, ganho do cache de sessão, benchmark de latência) ficam marcados com `#[ignore]` e nunca rodam no CI.
+1.  **Unit Tests:** For the mathematical logic of probability extraction and calibration (restricted softmax) from simulated tensors (dummy tensors). Also include numerical equivalence tests for the vendored paths: the CPU flash attention against a matmul/softmax reference (with GQA and causal offset) and the structured tokenization against the monolithic prompt.
+2.  **API Integration Tests:** Use `actix_web::test` to create local instances of the `App` service and guarantee that the input and output JSON payloads match the Jev contract exactly.
+3.  **Injectable Mocks:** To avoid downloading heavy models during CI/CD tests, create an abstraction (trait) for the evaluator. The Actix layer must be testable through a simulated model (mock) struct that returns predictable logits.
+4.  **Live Tests (`#[ignore]`):** Cases that require real weights (upstream equivalence, session-cache gain, latency benchmark) are marked `#[ignore]` and never run in CI.
 
-## 6. Fluxo de Trabalho do Agente
-Quando instruído a criar uma nova funcionalidade:
-1. Comece desenhando os tipos de dados (Structs de *Request* e *Response*).
-2. Escreva o teste de integração do Actix para a rota (que inicialmente falhará).
-3. Implemente a lógica de manipulação de tensores (com testes unitários).
-4. Conecte tudo no *handler* do Actix até que os testes passem.
+## 6. Agent Workflow
+When instructed to create a new feature:
+1. Start by designing the data types (Request and Response structs).
+2. Write the Actix integration test for the route (which will initially fail).
+3. Implement the tensor-handling logic (with unit tests).
+4. Wire everything into the Actix handler until the tests pass.
