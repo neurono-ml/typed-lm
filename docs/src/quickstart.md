@@ -122,13 +122,13 @@ docker run --rm -v "$PWD:/work" -w /work \
   --method lora --epochs 3 --batch-size 4 --learning-rate 1e-4
 ```
 
-For GPU training, build a CUDA image and add `--gpus all`:
+For GPU training, use the `:cuda` image and add `--gpus all` (the host needs the
+NVIDIA driver and the container toolkit):
 
 ```bash
-docker build -f docker/Dockerfile.trainer --build-arg FEATURES=cuda -t typed-lm-trainer:cuda .
 docker run --rm --gpus all -v "$PWD:/work" -w /work \
   -e HF_TOKEN=<hugging-face-token> \
-  typed-lm-trainer:cuda train \
+  ghcr.io/neurono-ml/typed-lm-trainer:cuda train \
   --model-id /work/checkpoint --dataset /work/resources/dataset.jsonl \
   --output-directory /work/output/train --method lora --device cuda
 ```
@@ -168,6 +168,16 @@ docker run --rm -p 8080:8080 \
   -e HF_TOKEN=<hugging-face-token> \
   -v "$PWD/output/quantized:/models/quantized:ro" \
   ghcr.io/neurono-ml/typed-lm-serve:0.1.1 \
+  --model-id /models/quantized
+```
+
+On a GPU, use the `:cuda` image and add `--gpus all`:
+
+```bash
+docker run --rm --gpus all -p 8080:8080 \
+  -e HF_TOKEN=<hugging-face-token> \
+  -v "$PWD/output/quantized:/models/quantized:ro" \
+  ghcr.io/neurono-ml/typed-lm-serve:cuda \
   --model-id /models/quantized
 ```
 
