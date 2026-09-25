@@ -264,8 +264,25 @@ docker run --rm -v "$PWD:/work" -w /work \
   --method lora --epochs 3 --batch-size 4 --learning-rate 1e-4
 ```
 
-For a GPU, add `--gpus all` and use a CUDA image (see
-[Container images](#container-images)).
+For a GPU, use the `:cuda` image (it includes the CUDA runtime libraries) and
+pass `--gpus all`; the host only needs the NVIDIA driver and the container
+toolkit:
+
+```bash
+# Server on GPU.
+docker run --rm --gpus all -p 8080:8080 \
+  -e HF_TOKEN=<hugging-face-token> \
+  ghcr.io/neurono-ml/typed-lm-serve:cuda
+
+# Trainer on GPU.
+docker run --rm --gpus all -v "$PWD:/work" -w /work \
+  -e HF_TOKEN=<hugging-face-token> \
+  ghcr.io/neurono-ml/typed-lm-trainer:cuda train \
+  --model-id /work/checkpoint \
+  --dataset /work/resources/dataset.jsonl \
+  --output-directory /work/output/train \
+  --method lora --device cuda --epochs 3 --batch-size 4 --learning-rate 1e-4
+```
 
 ### With cargo
 
@@ -391,20 +408,47 @@ cargo run -p typed-lm-trainer -- --help
 
 ### Container images
 
-Prebuilt CPU images for both binaries are published to the GitHub Container
-Registry on every release, tagged `latest` and with the version:
+Prebuilt images for both binaries are published to the GitHub Container Registry
+on every release. CPU images carry `latest` and the version; CUDA images add a
+`-cuda` suffix (and the `cuda` tag):
 
-```bash
-docker pull ghcr.io/neurono-ml/typed-lm-serve:latest
-docker pull ghcr.io/neurono-ml/typed-lm-trainer:latest
+```mermaid
+flowchart LR
+  host["host"]:::neutral
+  gpu{"NVIDIA GPU<br/>+ container toolkit?"}:::warning
+  cpu["typed-lm-serve:0.1.1<br/>typed-lm-trainer:0.1.1<br/>(latest too)"]:::accent
+  cuda["typed-lm-serve:cuda<br/>typed-lm-trainer:cuda"]:::success
+  runcpu["docker run -p 8080:8080"]:::accent
+  runcuda["docker run --gpus all<br/>--model-dtype auto"]:::success
+  serve["typed answers"]:::primary
 
-docker pull ghcr.io/neurono-ml/typed-lm-serve:0.1.1
+  host --> gpu
+  gpu -- "no" --> cpu --> runcpu --> serve
+  gpu -- "yes" --> cuda --> runcuda --> serve
+
+  classDef primary fill:#ede9fe,stroke:#7c3aed,color:#3b0764,stroke-width:1.5px
+  classDef accent fill:#dbeafe,stroke:#2563eb,color:#0c4a6e,stroke-width:1.5px
+  classDef success fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:1.5px
+  classDef warning fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef neutral fill:#f4f4f5,stroke:#a1a1aa,color:#18181b,stroke-width:1.5px
 ```
 
-| Image | Contents |
-|---|---|
-| `ghcr.io/neurono-ml/typed-lm-serve` | The Jev-compatible HTTP server |
-| `ghcr.io/neurono-ml/typed-lm-trainer` | `train` and `quantize` |
+```bash
+# CPU
+docker pull ghcr.io/neurono-ml/typed-lm-serve:latest
+docker pull ghcr.io/neurono-ml/typed-lm-serve:0.1.1
+
+# CUDA (GPU)
+docker pull ghcr.io/neurono-ml/typed-lm-serve:cuda
+docker pull ghcr.io/neurono-ml/typed-lm-serve:0.1.1-cuda
+```
+
+| Image | Accelerator | Contents |
+|---|---|---|
+| `ghcr.io/neurono-ml/typed-lm-serve` | CPU | The Jev-compatible HTTP server |
+| `ghcr.io/neurono-ml/typed-lm-trainer` | CPU | `train` and `quantize` |
+| `.../typed-lm-serve:cuda` | CUDA | Server with the CUDA runtime libraries |
+| `.../typed-lm-trainer:cuda` | CUDA | Trainer with the CUDA runtime libraries |
 
 The server listens on `8080`; pass an `HF_TOKEN` for gated models, and mount a
 context file and the model cache:
@@ -418,14 +462,27 @@ docker run --rm -p 8080:8080 \
   ghcr.io/neurono-ml/typed-lm-serve:0.1.1
 ```
 
-Build a GPU image from source with `--build-arg FEATURES=cuda` and run it with
-`--gpus all`:
+#### GPU (CUDA)
+
+The CUDA images bundle the runtime libraries candle loads (`cudart`, `cublas`,
+`curand`, `nvrtc`); the host only needs the NVIDIA driver and the container
+toolkit. Select F16 weights automatically with `--model-dtype auto`:
 
 ```bash
-docker build -f docker/Dockerfile.serve --build-arg FEATURES=cuda -t typed-lm-serve:cuda .
 docker run --rm --gpus all -p 8080:8080 \
   -e HF_TOKEN=<hugging-face-token> \
-  typed-lm-serve:cuda
+  -e MODEL_DTYPE=auto \
+  -v typed-lm-cache:/root/.cache/huggingface \
+  ghcr.io/neurono-ml/typed-lm-serve:cuda
+```
+
+To build the CUDA image from source instead (the release pipeline does this
+automatically), use the multi-stage Dockerfile; the compute capability can be
+tuned for the target GPU:
+
+```bash
+docker build -f docker/Dockerfile.serve-cuda \
+  --build-arg CUDA_COMPUTE_CAP=80 -t typed-lm-serve:cuda .
 ```
 
 ### Prebuilt binaries
