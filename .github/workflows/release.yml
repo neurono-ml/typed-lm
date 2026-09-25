@@ -91,7 +91,24 @@ jobs:
             exit 1
           fi
 
-      - name: Create the release and generate its notes
+      - name: Install git-cliff
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff@2.14.2
+
+      - name: Generate the release notes from the commits
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = "tag" ]; then
+            git-cliff --config cliff.toml --current --output RELEASE_NOTES.md
+          else
+            git-cliff --config cliff.toml --unreleased --tag "$VERSION" --output RELEASE_NOTES.md
+          fi
+
+      - name: Create the release with the generated notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
@@ -105,12 +122,12 @@ jobs:
           if [ "$REF_TYPE" = "tag" ]; then
             gh release create "$TAG" \
               --title "typed-lm $VERSION" \
-              --generate-notes
+              --notes-file RELEASE_NOTES.md
           else
             gh release create "$TAG" \
               --target "$GITHUB_SHA" \
               --title "typed-lm $VERSION" \
-              --generate-notes
+              --notes-file RELEASE_NOTES.md
           fi
 
   # 3. Build stage: prebuilt binaries for every host we can cover on
