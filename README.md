@@ -1,5 +1,9 @@
 # typed-lm
 
+[![Docs](https://img.shields.io/badge/docs-neurono--ml.github.io-6d28d9)](https://neurono-ml.github.io/typed-lm/)
+[![crates.io](https://img.shields.io/crates/v/typed-lm-serve)](https://crates.io/crates/typed-lm-serve)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
+
 Rust monorepo for **deterministic inference** and **adapter training** of dense
 decoder models. Instead of autoregressive
 text generation, the server classifies answers in a **single forward pass**:
@@ -7,7 +11,7 @@ each question is answered from the logits of a local model run with
 [Candle](https://github.com/huggingface/candle). The supported families are
 **Llama, Qwen2, Qwen3, Mistral, Gemma, Gemma2 and Gemma3**, detected
 automatically from the `model_type` field in `config.json`
-(see [Supported architectures](docs/running.md#supported-architectures)).
+(see [Supported architectures](https://neurono-ml.github.io/typed-lm/reference/architectures.html)).
 Mixture-of-Experts and multi-head-latent-attention families (for example
 `mixtral`, `qwen3_moe`, `deepseek_v2`/`deepseek_v3`) are **not supported** and
 are rejected at load time. The trainer produces LoRA/QLoRA adapters and
@@ -17,13 +21,23 @@ The HTTP API is compatible with the **Jev (TypeSafe AI)** format: the client
 sends `state` (case facts) and `questions` (`noul`/`choice`/`score` with
 instructions and criteria) and receives typed answers — no free text.
 
+> **📖 Full documentation:** <https://neurono-ml.github.io/typed-lm/>
+> Quick start: <https://neurono-ml.github.io/typed-lm/quickstart.html> ·
+> API: <https://neurono-ml.github.io/typed-lm/guides/api.html> ·
+> Training: <https://neurono-ml.github.io/typed-lm/training/index.html>
+
 ## Documentation
 
-| Guide | Contents |
+The complete guide is published at **<https://neurono-ml.github.io/typed-lm/>**:
+
+| Guide | Link |
 |---|---|
-| [`docs/running.md`](docs/running.md) | Build and run the server: CPU/GPU, flags, layouts, session cache. |
-| [`docs/api.md`](docs/api.md) | Jev contract, routes, response shapes and `curl` examples. |
-| [`docs/training.md`](docs/training.md) | Dataset format, LoRA/QLoRA training, FP8/FP4 quantization. |
+| Quick start | <https://neurono-ml.github.io/typed-lm/quickstart.html> |
+| Calling the API | <https://neurono-ml.github.io/typed-lm/guides/api.html> |
+| Running the server | <https://neurono-ml.github.io/typed-lm/guides/running.html> |
+| Training tutorial | <https://neurono-ml.github.io/typed-lm/training/index.html> |
+| Configuration file (TOML) | <https://neurono-ml.github.io/typed-lm/reference/configuration-file.html> |
+| CLI cheat sheet | <https://neurono-ml.github.io/typed-lm/reference/cheatsheet.html> |
 
 Additional references:
 
@@ -125,7 +139,8 @@ docker run --rm -p 8080:8080 ghcr.io/neurono-ml/typed-lm-serve:latest
 
 The server resolves its execution device from the compiled features at startup;
 the trainer accepts an explicit `--device auto|cpu|cuda`. See
-[`docs/running.md`](docs/running.md) for the full flag reference.
+[Running the server](https://neurono-ml.github.io/typed-lm/guides/running.html)
+for the full flag reference.
 
 ## Quickstart
 
@@ -151,9 +166,10 @@ cargo run -p typed-lm-trainer -- quantize \
   --quantization fp8 --output-directory output/quantized
 ```
 
-See [`docs/running.md`](docs/running.md) for server details,
-[`docs/api.md`](docs/api.md) for the full contract and
-[`docs/training.md`](docs/training.md) for the training/quantization pipeline.
+See [Running the server](https://neurono-ml.github.io/typed-lm/guides/running.html)
+for server details, [Calling the API](https://neurono-ml.github.io/typed-lm/guides/api.html)
+for the full contract and [Training and quantization](https://neurono-ml.github.io/typed-lm/training/index.html)
+for the training/quantization pipeline.
 
 ## Routes
 
@@ -162,7 +178,8 @@ The request accepts `noul` (boolean decision), `choice` (best option from a
 restricted set) and `score` (continuous value over levels) questions, combinable
 in one call. Invalid bodies return `422`, unknown models `404` and inference
 failures `500`, all with the `{"error": {"message": "..."}}` envelope. The
-complete shapes are in [`docs/api.md`](docs/api.md).
+complete shapes are in the
+[HTTP API reference](https://neurono-ml.github.io/typed-lm/reference/api.html).
 
 ## Acceleration
 
@@ -174,8 +191,8 @@ complete shapes are in [`docs/api.md`](docs/api.md).
   device; parity is functional, not of speed.
 
 Measured latency tables and the devcontainer/CUDA setup are in
-[`docs/running.md`](docs/running.md) and the original benchmark notes further
-below.
+[Running the server](https://neurono-ml.github.io/typed-lm/guides/running.html)
+and the original benchmark notes further below.
 
 ## Tests
 

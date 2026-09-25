@@ -1,0 +1,66 @@
+# typed-lm
+
+> Single-forward-pass, Jev-compatible semantic routing in Rust with LoRA/QLoRA training and FP8/FP4 quantization.
+
+typed-lm turns dense decoder models (Llama, Qwen2, Qwen3, Mistral, Gemma, Gemma2, Gemma3) into a typed semantic-routing API: send a state and typed questions, receive booleans, choices and scores your code can branch on. No text generation, no parsing.
+
+## Start here
+
+- [What is typed-lm?](https://neurono-ml.github.io/typed-lm/introduction.html): Overview of the typed-decision inference model.
+- [Quick start](https://neurono-ml.github.io/typed-lm/quickstart.html): Build the server, send a request and train an adapter.
+- [System One decisions](https://neurono-ml.github.io/typed-lm/concepts/system-one.html): Why a single forward pass instead of text generation.
+
+## Concepts
+
+- [State](https://neurono-ml.github.io/typed-lm/concepts/state.html): What the model evaluates and how context is attached.
+- [Questions (primitives)](https://neurono-ml.github.io/typed-lm/concepts/primitives.html): Noul, Choice and Score.
+- [Choice](https://neurono-ml.github.io/typed-lm/concepts/choice.html): Pick one option from a closed set.
+- [Score](https://neurono-ml.github.io/typed-lm/concepts/score.html): Rate the state on ordered levels.
+- [Noul](https://neurono-ml.github.io/typed-lm/concepts/noul.html): Probability that a proposition is true.
+- [Confidence](https://neurono-ml.github.io/typed-lm/concepts/confidence.html): How certain the model is and how to use it.
+- [Designing with typed decisions](https://neurono-ml.github.io/typed-lm/concepts/how-to-build.html): Keep code in control.
+- [typed-lm and Jev](https://neurono-ml.github.io/typed-lm/concepts/comparison-with-jev.html): Compatibility and differences.
+
+## Guides
+
+- [Calling the API](https://neurono-ml.github.io/typed-lm/guides/api.html): Routes, request and response contract, curl examples.
+- [Running the server](https://neurono-ml.github.io/typed-lm/guides/running.html): Flags, CPU/GPU acceleration and supported architectures.
+- [Deploying and operating](https://neurono-ml.github.io/typed-lm/guides/operations.html): Health, sizing and observability.
+- [Patterns](https://neurono-ml.github.io/typed-lm/guides/patterns.html): Reusable architectures.
+- [Cookbooks](https://neurono-ml.github.io/typed-lm/guides/cookbooks.html): End-to-end recipes.
+
+## Training tutorial
+
+- [Training overview](https://neurono-ml.github.io/typed-lm/training/index.html): Methods and pipeline.
+- [Preparing datasets](https://neurono-ml.github.io/typed-lm/training/datasets.html): The Jev-native training dataset format.
+- [Configuring a run](https://neurono-ml.github.io/typed-lm/training/configuration.html): CLI flags and the TOML file, with precedence.
+- [Choosing an architecture](https://neurono-ml.github.io/typed-lm/training/architecture.html): Geometry for full and from-scratch.
+- [Training LoRA and QLoRA adapters](https://neurono-ml.github.io/typed-lm/training/lora-qlora.html): Adapter training over a frozen checkpoint.
+- [Full fine-tuning](https://neurono-ml.github.io/typed-lm/training/full.html): Train every parameter from a checkpoint.
+- [Training from scratch](https://neurono-ml.github.io/typed-lm/training/from-scratch.html): Deterministic random initialization.
+- [Quantization (FP8 and FP4)](https://neurono-ml.github.io/typed-lm/training/quantization.html): Post-training quantization.
+- [Serving a trained artifact](https://neurono-ml.github.io/typed-lm/training/serving-artifacts.html): Serve adapters and checkpoints.
+
+## Reference
+
+- [HTTP API reference](https://neurono-ml.github.io/typed-lm/reference/api.html): Complete endpoint reference.
+- [Server flags](https://neurono-ml.github.io/typed-lm/reference/server-flags.html): Every server flag and environment variable.
+- [Trainer flags](https://neurono-ml.github.io/typed-lm/reference/trainer-flags.html): Every trainer flag.
+- [Configuration file (TOML)](https://neurono-ml.github.io/typed-lm/reference/configuration-file.html): Every TOML key.
+- [Supported architectures](https://neurono-ml.github.io/typed-lm/reference/architectures.html): The seven dense families.
+- [Artifact formats](https://neurono-ml.github.io/typed-lm/reference/artifacts.html): What each run writes.
+- [CLI cheat sheet](https://neurono-ml.github.io/typed-lm/reference/cheatsheet.html): Common commands.
+
+## Engineering
+
+- [Architecture](https://neurono-ml.github.io/typed-lm/engineering/architecture.html): The workspace and module layout.
+- [Scoring and batched decoding](https://neurono-ml.github.io/typed-lm/engineering/scoring.html): Inference internals.
+- [Session prefix cache](https://neurono-ml.github.io/typed-lm/engineering/session-cache.html): The LRU design.
+- [Benchmarks](https://neurono-ml.github.io/typed-lm/engineering/benchmarks.html): CPU and GPU latency.
+- [Testing](https://neurono-ml.github.io/typed-lm/engineering/testing.html): Test layers.
+
+## Optional
+
+- [FAQ](https://neurono-ml.github.io/typed-lm/community/faq.html): Common questions.
+- [Contributing](https://neurono-ml.github.io/typed-lm/community/contributing.html): Project rules and workflow.
+- [GitHub repository](https://github.com/neurono-ml/typed-lm)

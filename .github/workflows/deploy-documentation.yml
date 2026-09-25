@@ -1,0 +1,74 @@
+name: Deploy documentation
+
+on:
+  push:
+    branches: [docs/gh-pages]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build the mdBook
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install mdBook
+        uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: latest
+
+      - name: Build the book
+        run: mdbook build docs
+
+      - name: Generate sitemap.xml
+        run: |
+          set -euo pipefail
+          site="https://neurono-ml.github.io/typed-lm"
+          {
+            echo '<?xml version="1.0" encoding="UTF-8"?>'
+            echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            find docs/book -name '*.html' | sort | while read -r page; do
+              relative="${page#docs/book/}"
+              if [ "$relative" = "print.html" ]; then
+                continue
+              fi
+              if [ "$relative" = "404.html" ]; then
+                continue
+              fi
+              if [ "$relative" = "toc.html" ]; then
+                continue
+              fi
+              echo "  <url><loc>${site}/${relative}</loc></url>"
+            done
+            echo '</urlset>'
+          } > docs/book/sitemap.xml
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/book
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

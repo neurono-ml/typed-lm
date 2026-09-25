@@ -1,5 +1,7 @@
 # typed-lm-common
 
+[![Docs](https://img.shields.io/badge/docs-neurono--ml.github.io-6d28d9)](https://neurono-ml.github.io/typed-lm/)
+
 Shared library for the [`typed-lm`](https://github.com/neurono-ml/typed-lm)
 workspace. It defines everything the server and the trainer must agree on:
 
@@ -12,6 +14,8 @@ workspace. It defines everything the server and the trainer must agree on:
 
 Most users depend on `typed-lm-serve` or `typed-lm-trainer` rather than this
 crate directly.
+
+> **📖 Full documentation:** <https://neurono-ml.github.io/typed-lm/>
 
 ## License
 

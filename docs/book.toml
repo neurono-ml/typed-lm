@@ -1,0 +1,44 @@
+[book]
+title = "typed-lm"
+description = "Single-forward-pass, Jev-compatible semantic routing in Rust — typed decisions, LoRA/QLoRA training and FP8/FP4 quantization."
+authors = ["typed-lm project"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "coal"
+additional-css = ["skin/custom.css"]
+additional-js = [
+    "skin/mermaid.min.js",
+    "skin/mermaid-init.js",
+    "skin/custom.js",
+]
+git-repository-url = "https://github.com/neurono-ml/typed-lm"
+edit-url-template = "https://github.com/neurono-ml/typed-lm/edit/docs/gh-pages/docs/{path}"
+site-url = "/typed-lm/"
+no-section-label = true
+
+[output.html.search]
+enable = true
+boost-title = 2
+boost-hierarchy = 2
+boost-paragraph = 1
+expand = true
+heading-split-level = 3
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.playground]
+editable = false
+line-numbers = true
+copyable = true
+
+[rust]
+edition = "2021"

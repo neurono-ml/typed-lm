@@ -1,11 +1,18 @@
 # typed-lm-trainer
 
+[![Docs](https://img.shields.io/badge/docs-neurono--ml.github.io-6d28d9)](https://neurono-ml.github.io/typed-lm/)
+
 **LoRA/QLoRA** fine-tuning, **full-parameter** training (`full` and
 `from-scratch`) and **post-training quantization** (**PTQ FP8/FP4**) for the
 models served by `typed-lm-serve`. The trainer optimizes the **cross-entropy at
 the decision position** — the last token of the prompt, restricted to the
 candidate labels — which is exactly the position the server reads at inference
 time, ensuring the adapter tunes the behaviour the API actually uses.
+
+> **📖 Full documentation:** <https://neurono-ml.github.io/typed-lm/>
+> Training tutorial: <https://neurono-ml.github.io/typed-lm/training/index.html> ·
+> Preparing datasets: <https://neurono-ml.github.io/typed-lm/training/datasets.html> ·
+> Configuration (TOML): <https://neurono-ml.github.io/typed-lm/reference/configuration-file.html>
 
 ## Subcommands
 
@@ -129,8 +136,8 @@ Gemma3 local RoPE and window, attention bias), so the emitted `config.json` is
 always serveable by `typed-lm-serve`.
 
 The complete TOML reference (`[run]`, `[model]`, `[initialization]`,
-`[dataset]`, `[tokenizer]`) is in
-[`docs/configuration-file.md`](../docs/configuration-file.md).
+`[dataset]`, `[tokenizer]`) is in the
+[configuration file reference](https://neurono-ml.github.io/typed-lm/reference/configuration-file.html).
 
 ## Training from scratch (`from-scratch`)
 
@@ -195,4 +202,5 @@ exports FP8:
 cargo test -p typed-lm-trainer --features cuda --test live_gpu_e2e -- --ignored --nocapture
 ```
 
-Detailed documentation is in [`docs/training.md`](../docs/training.md).
+Detailed documentation is in the
+[training tutorial](https://neurono-ml.github.io/typed-lm/training/index.html).
