@@ -112,11 +112,25 @@ same-named CLI flag.
 | `intermediate_size` | integer | `--intermediate-size` |
 | `num_hidden_layers` | integer | `--num-hidden-layers` |
 | `num_attention_heads` | integer | `--num-attention-heads` |
+| `head_dim` | integer | `--head-dim` |
 | `num_key_value_heads` | integer | `--num-key-value-heads` |
 | `max_position_embeddings` | integer | `--max-position-embeddings` |
 | `rope_theta` | float | `--rope-theta` |
 | `rms_norm_eps` | float | `--rms-norm-eps` |
 | `tie_word_embeddings` | boolean | `--tie-word-embeddings` |
+| `attention_bias` | boolean | `--attention-bias` |
+| `sliding_window` | integer | `--sliding-window` |
+| `sliding_window_pattern` | integer | `--sliding-window-pattern` |
+| `rope_local_base_frequency` | float | `--rope-local-base-frequency` |
+| `query_pre_attention_scalar` | integer | `--query-pre-attention-scalar` |
+| `logit_softcapping` | float | `--logit-softcapping` |
+| `attention_logit_softcapping` | float | `--attention-logit-softcapping` |
+
+Any key left absent falls back to the family default: `head_dim` derives from
+`hidden_size / num_attention_heads`, Gemma2/Gemma3 fill `query_pre_attn_scalar`,
+the logit soft-caps, the Gemma3 local RoPE base frequency and its sliding-window
+pattern automatically. This guarantees the emitted `config.json` can be served
+back for every dense family.
 
 ## `[initialization]`
 
@@ -134,7 +148,7 @@ they are applied over the built-in defaults. Absent keys keep their default.
 
 | TOML key | Type | CLI flag | Default |
 |---|---|---|---|
-| `path` | string | `--dataset` | required |
+| `path` | string | `--dataset` | — (required: CLI or TOML) |
 
 ## `[tokenizer]`
 

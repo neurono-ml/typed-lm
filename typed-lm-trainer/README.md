@@ -109,12 +109,24 @@ opcionais na CLI (default `none`) e podem vir do arquivo TOML:
 | `--intermediate-size` | Dimensão intermediária do feed-forward |
 | `--num-hidden-layers` | Número de blocos transformer |
 | `--num-attention-heads` | Número de cabeças de query |
+| `--head-dim` | Dimensão da cabeça (default: `hidden_size / num_attention_heads`) |
 | `--num-key-value-heads` | Número de cabeças key/value (GQA) |
 | `--vocab-size` | Tamanho do vocabulário |
 | `--max-position-embeddings` | Comprimento máximo de sequência |
 | `--rope-theta` | Frequência-base do rotary embedding |
 | `--rms-norm-eps` | Épsilon da normalização RMS |
 | `--tie-word-embeddings` | Embeddings de entrada e saída compartilham peso |
+| `--attention-bias` | Projeções de atenção com bias |
+| `--sliding-window` | Tamanho da janela deslizante |
+| `--sliding-window-pattern` | Alternância global/local do Gemma3 |
+| `--rope-local-base-frequency` | Frequência-base do RoPE local do Gemma3 |
+| `--query-pre-attention-scalar` | Denominador da escala de atenção do Gemma2/Gemma3 |
+| `--logit-softcapping` | `final_logit_softcapping` do Gemma2/Gemma3 |
+| `--attention-logit-softcapping` | `attn_logit_softcapping` do Gemma2/Gemma3 |
+
+Campos não informados recebem o default da família (geometria de `head_dim`,
+soft-caps, RoPE local e janela do Gemma3, viés de atenção), de modo que o
+`config.json` emitido é sempre servível pelo `typed-lm-serve`.
 
 A referência completa do TOML (seções `[run]`, `[model]`, `[initialization]`,
 `[dataset]`, `[tokenizer]`) está em

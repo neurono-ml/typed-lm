@@ -206,7 +206,7 @@ Main flags:
 | Flag | Description | Default |
 |---|---|---|
 | `--model-id` | Local base checkpoint (directory) | `Qwen/Qwen2.5-1.5B-Instruct` |
-| `--dataset` | Dataset file or directory | required |
+| `--dataset` | Dataset file or directory (or `[dataset] path` in the TOML) | required |
 | `--output-directory` | Adapter destination | `output/train` |
 | `--method` | `lora`, `qlora`, `full` or `from-scratch` | `lora` |
 | `--seed` | Initialization seed for `from-scratch` | `42` |
