@@ -9,7 +9,7 @@
 # CUDA image (then run it with `--gpus all` and an NVIDIA container runtime),
 # or FEATURES=metal on an Apple Silicon host.
 
-FROM rust:1-bookworm AS builder
+FROM rust:1-trixie AS builder
 ARG FEATURES=""
 WORKDIR /build
 RUN apt-get update \
@@ -20,7 +20,7 @@ COPY . .
 RUN rm -f .cargo/config.toml
 RUN cargo build --release -p typed-lm-serve ${FEATURES:+--features ${FEATURES}}
 
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*

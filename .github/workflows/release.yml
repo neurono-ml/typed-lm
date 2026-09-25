@@ -161,6 +161,7 @@ jobs:
           mkdir -p "dist/${staging}"
           cp target/release/typed-lm-serve "dist/${staging}/"
           cp target/release/typed-lm-trainer "dist/${staging}/"
+          chmod 0755 "dist/${staging}/typed-lm-serve" "dist/${staging}/typed-lm-trainer"
           cp README.md LICENSE "dist/${staging}/"
           tar -C dist -czf "dist/${staging}.tar.gz" "${staging}"
           rm -rf "dist/${staging}"
@@ -289,6 +290,9 @@ jobs:
         with:
           name: linux-cpu-binaries
           path: dist
+
+      - name: Restore the executable bit on the downloaded binaries
+        run: chmod 0755 dist/typed-lm-serve dist/typed-lm-trainer
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3

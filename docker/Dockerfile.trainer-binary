@@ -4,9 +4,13 @@
 # release workflow, which downloads the binary built on the runner into ./dist.
 # For a from-source build use docker/Dockerfile.trainer instead.
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY dist/typed-lm-trainer /usr/local/bin/typed-lm-trainer
+# `actions/download-artifact` does not preserve the executable bit, so the
+# copied binary arrives as 0644 and the container fails with "permission
+# denied". Restore it explicitly.
+RUN chmod 0755 /usr/local/bin/typed-lm-trainer
 ENTRYPOINT ["/usr/local/bin/typed-lm-trainer"]
