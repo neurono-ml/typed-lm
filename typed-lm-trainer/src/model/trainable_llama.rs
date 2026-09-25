@@ -18,20 +18,9 @@ use std::collections::HashMap;
 
 use candle_core::{DType, Device, IndexOp, Module, Result, Tensor, D};
 use candle_nn::{rotary_emb, VarBuilder, VarMap};
-use typed_lm_common::checkpoint::ModelArchitecture;
 use typed_lm_common::model_config::ParallelModelConfig;
 
 use crate::model::lora::LoRALinear;
-
-/// Gemma3 default `sliding_window_pattern`.
-///
-/// Gemma3 alternates a full-attention (global) layer every
-/// `sliding_window_pattern` layers; the checkpoint's `config.json` may override
-/// it, but [`ParallelModelConfig`] does not surface the pattern, so the
-/// architecture default (6) is used. Every other family with a window applies
-/// it to all of its layers (Mistral, Gemma2) or to the layers at or above
-/// `max_window_layers` (Qwen3).
-const GEMMA3_SLIDING_WINDOW_PATTERN: usize = 6;
 
 /// LoRA hyper-parameters for one trainable model.
 #[derive(Debug, Clone, Copy)]
@@ -125,43 +114,6 @@ fn causal_window_mask(sequence_length: usize, window: usize, device: &Device) ->
     Tensor::from_vec(values, (sequence_length, sequence_length), device)
 }
 
-/// Per-layer sliding-window size (`None` = full attention).
-///
-/// The choice is derived from the family, because
-/// [`ParallelModelConfig`] carries the window size but not the per-layer
-/// pattern:
-///
-/// - Qwen3: the first `max_window_layers` layers use full attention and the
-///   remaining layers use the window;
-/// - Gemma3: a full-attention layer every `sliding_window_pattern` layers
-///   (reusing the architecture default, since the pattern is not surfaced);
-/// - Mistral and Gemma2: the window applies to every layer. Gemma2 alternates
-///   local/global attention upstream; [`ParallelModelConfig`] does not surface
-///   that alternation, so the training forward applies the window uniformly to
-///   its layers. The serving path stays authoritative for the exact pattern.
-/// - every other family: no window.
-fn window_per_layer(config: &ParallelModelConfig) -> Vec<Option<usize>> {
-    let layer_count = config.num_hidden_layers;
-    let window = match config.sliding_window {
-        Some(window) if window > 0 => window,
-        _ => return vec![None; layer_count],
-    };
-    match config.architecture {
-        ModelArchitecture::Qwen3 => (0..layer_count)
-            .map(|index| (index >= config.max_window_layers).then_some(window))
-            .collect(),
-        ModelArchitecture::Gemma3 => (0..layer_count)
-            .map(|index| ((index + 1) % GEMMA3_SLIDING_WINDOW_PATTERN != 0).then_some(window))
-            .collect(),
-        ModelArchitecture::Mistral | ModelArchitecture::Gemma2 => {
-            vec![Some(window); layer_count]
-        }
-        ModelArchitecture::Llama | ModelArchitecture::Qwen2 | ModelArchitecture::Gemma => {
-            vec![None; layer_count]
-        }
-    }
-}
-
 /// Narrows a capacity-sized mask to the actual sequence and broadcasts it.
 fn narrow_attention_mask(
     mask: &Tensor,
@@ -188,6 +140,10 @@ struct TrainableAttention {
     attention_scale: f64,
     /// Gemma2/Gemma3 `attn_logit_softcapping`: `tanh(logits / cap) * cap`.
     attention_logit_softcapping: Option<f64>,
+    /// Per-head query normalization (Qwen3/Gemma3).
+    query_norm: Option<FrozenRmsNorm>,
+    /// Per-head key normalization (Qwen3/Gemma3).
+    key_norm: Option<FrozenRmsNorm>,
     cos: Tensor,
     sin: Tensor,
 }
@@ -226,6 +182,16 @@ impl TrainableAttention {
             ))?
             .transpose(1, 2)?
             .contiguous()?;
+
+        // Qwen3/Gemma3 normalize query and key per head before RoPE.
+        let query = match &self.query_norm {
+            Some(norm) => norm.forward(&query)?,
+            None => query,
+        };
+        let key = match &self.key_norm {
+            Some(norm) => norm.forward(&key)?,
+            None => key,
+        };
 
         let query = rotary_emb::rope(&query, &self.cos, &self.sin)?;
         let key = rotary_emb::rope(&key, &self.cos, &self.sin)?;
@@ -278,11 +244,14 @@ struct TrainableMlp {
     gate_projection: LoRALinear,
     up_projection: LoRALinear,
     down_projection: LoRALinear,
+    activation: candle_nn::Activation,
 }
 
 impl TrainableMlp {
     fn forward(&self, hidden: &Tensor) -> Result<Tensor> {
-        let gate = candle_nn::ops::silu(&self.gate_projection.forward(hidden)?)?;
+        let gate = self
+            .activation
+            .forward(&self.gate_projection.forward(hidden)?)?;
         let up = self.up_projection.forward(hidden)?;
         self.down_projection.forward(&(gate * up)?)
     }
@@ -295,6 +264,10 @@ struct TrainableBlock {
     attention: TrainableAttention,
     post_attention_norm: FrozenRmsNorm,
     mlp: TrainableMlp,
+    /// Gemma2/Gemma3 pre-feed-forward norm; `None` for the Llama layout.
+    pre_feedforward_norm: Option<FrozenRmsNorm>,
+    /// Gemma2/Gemma3 post-feed-forward norm; `None` for the Llama layout.
+    post_feedforward_norm: Option<FrozenRmsNorm>,
     /// Sliding-window size for this layer, or `None` for full attention.
     window: Option<usize>,
 }
@@ -304,10 +277,23 @@ impl TrainableBlock {
         let residual = hidden;
         let normalized = self.input_norm.forward(hidden)?;
         let attended = self.attention.forward(&normalized, mask)?;
-        let hidden = (attended + residual)?;
-        let residual = &hidden;
-        let normalized = self.post_attention_norm.forward(&hidden)?;
-        self.mlp.forward(&normalized)? + residual
+        match (&self.pre_feedforward_norm, &self.post_feedforward_norm) {
+            // Gemma2/Gemma3 four-normalization layout.
+            (Some(pre_feedforward_norm), Some(post_feedforward_norm)) => {
+                let hidden = (self.post_attention_norm.forward(&attended)? + residual)?;
+                let residual = &hidden;
+                let normalized = pre_feedforward_norm.forward(&hidden)?;
+                let fed = self.mlp.forward(&normalized)?;
+                post_feedforward_norm.forward(&fed)? + residual
+            }
+            // Llama/Qwen/Mistral two-normalization layout.
+            _ => {
+                let hidden = (attended + residual)?;
+                let residual = &hidden;
+                let normalized = self.post_attention_norm.forward(&hidden)?;
+                self.mlp.forward(&normalized)? + residual
+            }
+        }
     }
 }
 
@@ -364,7 +350,7 @@ impl TrainableLlama {
             config.rms_norm_unit_offset,
         )?;
 
-        let windows = window_per_layer(config);
+        let windows = config.window_per_layer();
         let mut blocks = Vec::with_capacity(config.num_hidden_layers);
         for (index, window) in windows.iter().enumerate() {
             let layer_prefix = format!("model.layers.{index}");
@@ -386,8 +372,10 @@ impl TrainableLlama {
             None => None,
         };
         for (index, block) in blocks.iter_mut().enumerate() {
-            let (cos, sin) = match (&local_tables, windows[index]) {
-                (Some((local_cos, local_sin)), Some(_)) => (local_cos.clone(), local_sin.clone()),
+            let (cos, sin) = match &local_tables {
+                Some((local_cos, local_sin)) if config.uses_local_rope(index) => {
+                    (local_cos.clone(), local_sin.clone())
+                }
                 _ => (global_cos.clone(), global_sin.clone()),
             };
             block.attention.cos = cos;
@@ -489,7 +477,7 @@ impl TrainableLlama {
                 &format!("{attention_prefix}.o_proj"),
                 config.hidden_size,
                 query_size,
-                false,
+                config.output_projection_bias(),
                 lora,
             )?,
             num_attention_heads: config.num_attention_heads,
@@ -497,6 +485,18 @@ impl TrainableLlama {
             head_dimension,
             attention_scale,
             attention_logit_softcapping: config.attention_logit_softcapping,
+            query_norm: build_per_head_norm(
+                base_builder,
+                config,
+                &format!("{attention_prefix}.q_norm"),
+                head_dimension,
+            )?,
+            key_norm: build_per_head_norm(
+                base_builder,
+                config,
+                &format!("{attention_prefix}.k_norm"),
+                head_dimension,
+            )?,
             cos: Tensor::zeros((1, 1), DType::F32, device)?,
             sin: Tensor::zeros((1, 1), DType::F32, device)?,
         };
@@ -530,6 +530,30 @@ impl TrainableLlama {
                 false,
                 lora,
             )?,
+            activation: config.hidden_activation,
+        };
+
+        let (pre_feedforward_norm, post_feedforward_norm) = if config.gemma_block_layout {
+            (
+                Some(FrozenRmsNorm::from_base(
+                    &base_builder.get(
+                        config.hidden_size,
+                        &format!("{layer_prefix}.pre_feedforward_layernorm.weight"),
+                    )?,
+                    config.rms_norm_eps,
+                    config.rms_norm_unit_offset,
+                )?),
+                Some(FrozenRmsNorm::from_base(
+                    &base_builder.get(
+                        config.hidden_size,
+                        &format!("{layer_prefix}.post_feedforward_layernorm.weight"),
+                    )?,
+                    config.rms_norm_eps,
+                    config.rms_norm_unit_offset,
+                )?),
+            )
+        } else {
+            (None, None)
         };
 
         Ok(TrainableBlock {
@@ -537,6 +561,8 @@ impl TrainableLlama {
             attention,
             post_attention_norm,
             mlp,
+            pre_feedforward_norm,
+            post_feedforward_norm,
             window,
         })
     }
@@ -696,6 +722,23 @@ fn build_lora(
     )
 }
 
+/// Builds the optional per-head query/key norm (`Qwen3`/`Gemma3`).
+fn build_per_head_norm(
+    base_builder: &VarBuilder,
+    config: &ParallelModelConfig,
+    prefix: &str,
+    head_dimension: usize,
+) -> anyhow::Result<Option<FrozenRmsNorm>> {
+    if !config.per_head_query_key_norm {
+        return Ok(None);
+    }
+    Ok(Some(FrozenRmsNorm::from_base(
+        &base_builder.get(head_dimension, &format!("{prefix}.weight"))?,
+        config.rms_norm_eps,
+        config.rms_norm_unit_offset,
+    )?))
+}
+
 /// Builds the RoPE cosine/sine tables for the configured positions and base
 /// frequency.
 fn build_rotary_tables(
@@ -721,6 +764,7 @@ fn build_rotary_tables(
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use typed_lm_common::checkpoint::ModelArchitecture;
 
     fn tiny_config() -> ParallelModelConfig {
         ParallelModelConfig {
@@ -745,7 +789,13 @@ mod tests {
             query_pre_attention_scalar: None,
             rms_norm_unit_offset: false,
             embedding_scale: None,
+            hidden_activation: ParallelModelConfig::default_hidden_activation(
+                typed_lm_common::checkpoint::ModelArchitecture::Llama,
+            ),
             rope_local_base_frequency: None,
+            gemma_block_layout: false,
+            per_head_query_key_norm: false,
+            sliding_window_pattern: 0,
         }
     }
 

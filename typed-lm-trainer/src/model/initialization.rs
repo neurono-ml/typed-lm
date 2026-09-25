@@ -130,13 +130,24 @@ pub fn canonical_tensor_names(config: &ParallelModelConfig) -> Vec<String> {
         let prefix = format!("model.layers.{index}");
         names.push(format!("{prefix}.input_layernorm.weight"));
         names.push(format!("{prefix}.post_attention_layernorm.weight"));
+        if config.gemma_block_layout {
+            names.push(format!("{prefix}.pre_feedforward_layernorm.weight"));
+            names.push(format!("{prefix}.post_feedforward_layernorm.weight"));
+        }
         for projection in ["q_proj", "k_proj", "v_proj"] {
             names.push(format!("{prefix}.self_attn.{projection}.weight"));
             if config.has_query_key_value_bias() {
                 names.push(format!("{prefix}.self_attn.{projection}.bias"));
             }
         }
+        if config.per_head_query_key_norm {
+            names.push(format!("{prefix}.self_attn.q_norm.weight"));
+            names.push(format!("{prefix}.self_attn.k_norm.weight"));
+        }
         names.push(format!("{prefix}.self_attn.o_proj.weight"));
+        if config.output_projection_bias() {
+            names.push(format!("{prefix}.self_attn.o_proj.bias"));
+        }
         for projection in ["gate_proj", "up_proj", "down_proj"] {
             names.push(format!("{prefix}.mlp.{projection}.weight"));
         }
@@ -225,6 +236,26 @@ pub fn initialize_model_tensors(
                 device,
             )?,
         );
+        if config.gemma_block_layout {
+            tensors.insert(
+                format!("{prefix}.pre_feedforward_layernorm.weight"),
+                constant_tensor(
+                    &mut initializer,
+                    config.hidden_size,
+                    configuration.norm_weight,
+                    device,
+                )?,
+            );
+            tensors.insert(
+                format!("{prefix}.post_feedforward_layernorm.weight"),
+                constant_tensor(
+                    &mut initializer,
+                    config.hidden_size,
+                    configuration.norm_weight,
+                    device,
+                )?,
+            );
+        }
 
         let attention_prefix = format!("{prefix}.self_attn");
         for (projection, output_size) in [
@@ -254,6 +285,19 @@ pub fn initialize_model_tensors(
                 );
             }
         }
+        if config.per_head_query_key_norm {
+            for norm in ["q_norm", "k_norm"] {
+                tensors.insert(
+                    format!("{attention_prefix}.{norm}.weight"),
+                    constant_tensor(
+                        &mut initializer,
+                        head_dimension,
+                        configuration.norm_weight,
+                        device,
+                    )?,
+                );
+            }
+        }
         tensors.insert(
             format!("{attention_prefix}.o_proj.weight"),
             normal_tensor(
@@ -264,6 +308,17 @@ pub fn initialize_model_tensors(
                 device,
             )?,
         );
+        if config.output_projection_bias() {
+            tensors.insert(
+                format!("{attention_prefix}.o_proj.bias"),
+                constant_tensor(
+                    &mut initializer,
+                    config.hidden_size,
+                    configuration.bias_value,
+                    device,
+                )?,
+            );
+        }
 
         let mlp_prefix = format!("{prefix}.mlp");
         tensors.insert(
@@ -401,7 +456,11 @@ mod tests {
             embedding_scale: traits
                 .scales_embeddings
                 .then_some((hidden_size as f64).sqrt()),
+            hidden_activation: ParallelModelConfig::default_hidden_activation(architecture),
             rope_local_base_frequency: None,
+            gemma_block_layout: traits.gemma_block_layout,
+            per_head_query_key_norm: traits.per_head_query_key_norm,
+            sliding_window_pattern: 0,
         }
     }
 
@@ -512,6 +571,33 @@ mod tests {
         assert!(!names.contains(&"model.layers.0.self_attn.q_proj.bias".to_string()));
         assert!(!names.contains(&"model.layers.0.self_attn.k_proj.bias".to_string()));
         assert!(!names.contains(&"model.layers.0.self_attn.v_proj.bias".to_string()));
+    }
+
+    #[test]
+    fn gemma3_configuration_carries_the_new_block_and_norm_tensors() -> anyhow::Result<()> {
+        let config = tiny_config(ModelArchitecture::Gemma3);
+        assert!(config.gemma_block_layout);
+        assert!(config.per_head_query_key_norm);
+        let names = canonical_tensor_names(&config);
+        for expected in [
+            "model.layers.0.pre_feedforward_layernorm.weight",
+            "model.layers.0.post_feedforward_layernorm.weight",
+            "model.layers.0.self_attn.q_norm.weight",
+            "model.layers.0.self_attn.k_norm.weight",
+        ] {
+            assert!(names.contains(&expected.to_string()), "missing {expected}");
+        }
+        // The deterministic initializer must write exactly the canonical names.
+        let tensors = initialize_model_tensors(
+            &config,
+            &InitializationConfiguration::default(),
+            11,
+            &Device::Cpu,
+        )?;
+        let mut keys: Vec<String> = tensors.keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, names);
+        Ok(())
     }
 
     #[test]
