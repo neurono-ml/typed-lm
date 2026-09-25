@@ -201,7 +201,6 @@ async fn run_serve_command(serve_arguments: ServeArguments) -> anyhow::Result<()
         "serving model '{served_model_name}' with context '{context_name}' on {address} (startup took {:.2}s)",
         startup_seconds
     );
-    println!("serving model '{served_model_name}' with context '{context_name}' on {address}");
     HttpServer::new(move || {
         App::new()
             .app_data(shared_state.clone())

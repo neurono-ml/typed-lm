@@ -850,7 +850,7 @@ mod tests {
         let checkpoint =
             HubCheckpointResolver::new(&model_identifier, None)?.resolve(&reference, None)?;
         let model = LanguageModel::load(&checkpoint, &device, dtype)?;
-        println!("device: {device:?}, dtype: {dtype:?}");
+        tracing::info!("device: {device:?}, dtype: {dtype:?}");
 
         // Warm up.
         let warm = model.prefill(&(2..40).collect::<Vec<u32>>())?.1;
@@ -877,7 +877,7 @@ mod tests {
             model.continue_forward(&[42], prefix_length, &mut single_cache)?;
             let single_elapsed = single_start.elapsed();
 
-            println!(
+            tracing::info!(
                 "prefix {prefix_length:>5}: prefill {prefix_elapsed:>10.2?} | 5 batched suffixes {batched_elapsed:>10.2?} | single next-token {single_elapsed:>10.2?}"
             );
         }

@@ -30,7 +30,7 @@ pub struct TelemetryGuard {
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
         if let Err(error) = self.tracer_provider.shutdown() {
-            eprintln!("failed to shut down tracer provider: {error}");
+            tracing::error!("failed to shut down tracer provider: {error}");
         }
     }
 }
