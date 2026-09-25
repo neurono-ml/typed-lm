@@ -9,7 +9,7 @@ authors.workspace = true
 description = "Jev-compatible, single-forward-pass semantic routing server for dense decoder models, built on Candle."
 readme = "README.md"
 keywords = ["llm", "inference", "actix-web", "candle", "server"]
-categories = ["web-programming::http-server", "machine-learning", "science"]
+categories = ["web-programming", "science", "artificial-intelligence"]
 
 [[bin]]
 name = "typed-lm-serve"

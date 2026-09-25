@@ -9,7 +9,7 @@ authors.workspace = true
 description = "LoRA/QLoRA and full fine-tuning plus FP8/FP4 post-training quantization for typed-lm dense decoder models."
 readme = "README.md"
 keywords = ["llm", "lora", "qlora", "fine-tuning", "quantization"]
-categories = ["machine-learning", "science", "command-line-utilities"]
+categories = ["command-line-utilities", "science", "artificial-intelligence"]
 
 [[bin]]
 name = "typed-lm-trainer"

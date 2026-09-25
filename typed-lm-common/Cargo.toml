@@ -9,7 +9,7 @@ authors.workspace = true
 description = "Shared Jev contract, labels, prompt rendering, checkpoint detection, device/dtype policy and FP8/FP4 quantization for typed-lm."
 readme = "README.md"
 keywords = ["llm", "candle", "inference", "quantization", "mlops"]
-categories = ["machine-learning", "science", "text-processing"]
+categories = ["science", "text-processing", "artificial-intelligence"]
 
 [dependencies]
 anyhow.workspace = true
