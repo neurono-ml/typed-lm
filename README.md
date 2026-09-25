@@ -157,7 +157,115 @@ flowchart LR
   classDef neutral fill:#f4f4f5,stroke:#a1a1aa,color:#18181b,stroke-width:1.5px
 ```
 
+## Train on your own decisions
+
+typed-lm is not just an inference server — it ships a **trainer** that turns a
+general-purpose checkpoint into a specialist for *your* decisions. It optimizes
+the **cross-entropy at the decision position**, the exact position the server
+reads, so what you train is what you serve.
+
+<div align="center">
+
+| **LoRA** | **QLoRA** | **Full** | **From-scratch** |
+|:---:|:---:|:---:|:---:|
+| adapters over a frozen base | adapters over a quantized base | every parameter | random init, deterministic |
+
+</div>
+
+**Why train with typed-lm?**
+
+- **One objective, end to end** — the training loss is the serving decision, so
+  there is no train/serve skew.
+- **Cheap specialization** — LoRA/QLoRA store only the adapter tensors; the base
+  is never duplicated.
+- **Your labels, your thresholds** — confidence is calibrated on your data.
+- **Quantize what you train** — FP8/FP4 PTQ and full/from-scratch checkpoints are
+  served by the same binary, with no merge step for complete checkpoints.
+
+```mermaid
+flowchart LR
+  dataset["dataset<br/>state + questions + answer"]:::neutral
+  checkpoint["base checkpoint"]:::accent
+  config["run configuration<br/>CLI or TOML"]:::warning
+  train["train<br/>lora · qlora · full · from-scratch"]:::primary
+  artifact["artifact<br/>adapter or checkpoint"]:::success
+  quantize["quantize<br/>fp8 · fp4"]:::accent
+  serve["typed-lm-serve"]:::success
+
+  dataset --> train
+  checkpoint --> train
+  config --> train
+  train --> artifact --> serve
+  artifact --> quantize --> serve
+
+  classDef primary fill:#ede9fe,stroke:#7c3aed,color:#3b0764,stroke-width:1.5px
+  classDef accent fill:#dbeafe,stroke:#2563eb,color:#0c4a6e,stroke-width:1.5px
+  classDef success fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:1.5px
+  classDef warning fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef neutral fill:#f4f4f5,stroke:#a1a1aa,color:#18181b,stroke-width:1.5px
+```
+
+```bash
+# Train a LoRA adapter over a frozen checkpoint.
+typed-lm-trainer train \
+  --model-id /path/to/local/checkpoint \
+  --dataset resources/dataset.jsonl \
+  --output-directory output/train \
+  --method lora --epochs 3 --batch-size 4 --learning-rate 1e-4
+
+# Merge the adapter and quantize to FP8.
+typed-lm-trainer quantize \
+  --model-id /path/to/local/checkpoint \
+  --adapter-directory output/train \
+  --quantization fp8 --output-directory output/quantized
+```
+
+| `--method` | Trainable parameters | Output | Serve directly? |
+|---|---|---|---|
+| `lora` (default) | LoRA `A`/`B` over a frozen checkpoint | `adapter.safetensors` | merge first |
+| `qlora` | LoRA over a quantized base | `adapter.safetensors` | merge first |
+| `full` | Every parameter from a checkpoint | complete checkpoint | **yes** |
+| `from-scratch` | Every parameter from random init (deterministic by `--seed`) | complete checkpoint | **yes** |
+
+> Full tutorial: [training](https://neurono-ml.github.io/typed-lm/training/index.html).
+
 ## Quickstart
+
+### With Docker (recommended)
+
+The fastest path — no toolchain, just an image. The server image pulls the model
+on first startup and listens on `8080`:
+
+```bash
+# Server. Mount a context file if you have one.
+docker run --rm -p 8080:8080 \
+  -v "$PWD/resources/memory.md:/etc/typed-lm/memory.md:ro" \
+  -e CONTEXT_PATH=/etc/typed-lm/memory.md \
+  ghcr.io/neurono-ml/typed-lm-serve:latest
+
+# Ask three typed questions in one call.
+curl -s http://127.0.0.1:8080/v1/systemone \
+  -H 'Content-Type: application/json' \
+  -d @examples/request_mixed.json
+```
+
+The trainer runs the same way, with the artifacts directory mounted so the
+outputs survive the container:
+
+```bash
+# Train a LoRA adapter; /work holds the checkpoint, dataset and outputs.
+docker run --rm -v "$PWD:/work" -w /work \
+  ghcr.io/neurono-ml/typed-lm-trainer:0.1.1 train \
+  --model-id /work/checkpoint \
+  --dataset /work/resources/dataset.jsonl \
+  --output-directory /work/output/train \
+  --method lora --epochs 3 --batch-size 4 --learning-rate 1e-4
+```
+
+For a GPU, add `--gpus all` and use a CUDA image (see
+[Container images](#container-images)).
+
+### With cargo
 
 ```bash
 # Install (CPU build; add --features cuda or --features metal for a GPU).
@@ -227,60 +335,6 @@ curl -s http://127.0.0.1:8080/v1/systemone \
 ```
 
 > Full walkthrough: [quickstart](https://neurono-ml.github.io/typed-lm/quickstart.html).
-
-## Train on your own decisions
-
-The trainer optimizes the **cross-entropy at the decision position**, the exact
-position the server reads. A dataset is Jev-native: the serving contract plus an
-`answer`.
-
-```mermaid
-flowchart LR
-  dataset["dataset<br/>state + questions + answer"]:::neutral
-  checkpoint["base checkpoint"]:::accent
-  config["run configuration<br/>CLI or TOML"]:::warning
-  train["train<br/>lora · qlora · full · from-scratch"]:::primary
-  artifact["artifact<br/>adapter or checkpoint"]:::success
-  quantize["quantize<br/>fp8 · fp4"]:::accent
-  serve["typed-lm-serve"]:::success
-
-  dataset --> train
-  checkpoint --> train
-  config --> train
-  train --> artifact --> serve
-  artifact --> quantize --> serve
-
-  classDef primary fill:#ede9fe,stroke:#7c3aed,color:#3b0764,stroke-width:1.5px
-  classDef accent fill:#dbeafe,stroke:#2563eb,color:#0c4a6e,stroke-width:1.5px
-  classDef success fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:1.5px
-  classDef warning fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
-  classDef neutral fill:#f4f4f5,stroke:#a1a1aa,color:#18181b,stroke-width:1.5px
-```
-
-```bash
-# Train a LoRA adapter over a frozen checkpoint.
-typed-lm-trainer train \
-  --model-id /path/to/local/checkpoint \
-  --dataset resources/dataset.jsonl \
-  --output-directory output/train \
-  --method lora --epochs 3 --batch-size 4 --learning-rate 1e-4
-
-# Merge the adapter and quantize to FP8.
-typed-lm-trainer quantize \
-  --model-id /path/to/local/checkpoint \
-  --adapter-directory output/train \
-  --quantization fp8 --output-directory output/quantized
-```
-
-| `--method` | Trainable parameters | Output |
-|---|---|---|
-| `lora` (default) | LoRA `A`/`B` over a frozen checkpoint | `adapter.safetensors` |
-| `qlora` | LoRA over a quantized base | `adapter.safetensors` |
-| `full` | Every parameter from a checkpoint | complete checkpoint |
-| `from-scratch` | Every parameter from random init | complete checkpoint |
-
-> Full tutorial: [training](https://neurono-ml.github.io/typed-lm/training/index.html).
-
 ## Supported architectures
 
 Detected automatically from `model_type` in `config.json`.
@@ -333,15 +387,44 @@ cargo run -p typed-lm-trainer -- --help
 | **CUDA** | `--features cuda` | `--features cuda` | The CUDA toolkit (`nvcc`) and an NVIDIA driver. |
 | **Apple GPU (Metal)** | `--features metal` | `--features metal` | macOS on Apple Silicon. |
 
-### Prebuilt binaries and containers
+### Container images
 
-Each [release](https://github.com/neurono-ml/typed-lm/releases) attaches binaries
-for Linux x86_64 (CPU/CUDA) and macOS arm64 (Metal), plus container images:
+Prebuilt CPU images for both binaries are published to the GitHub Container
+Registry on every release, tagged `latest` and with the version:
 
 ```bash
 docker pull ghcr.io/neurono-ml/typed-lm-serve:latest
-docker run --rm -p 8080:8080 ghcr.io/neurono-ml/typed-lm-serve:latest
+docker pull ghcr.io/neurono-ml/typed-lm-trainer:latest
+
+docker pull ghcr.io/neurono-ml/typed-lm-serve:0.1.1
 ```
+
+| Image | Contents |
+|---|---|
+| `ghcr.io/neurono-ml/typed-lm-serve` | The Jev-compatible HTTP server |
+| `ghcr.io/neurono-ml/typed-lm-trainer` | `train` and `quantize` |
+
+The server listens on `8080`; mount a context file and the model cache:
+
+```bash
+docker run --rm -p 8080:8080 \
+  -v "$PWD/resources/memory.md:/etc/typed-lm/memory.md:ro" \
+  -e CONTEXT_PATH=/etc/typed-lm/memory.md \
+  ghcr.io/neurono-ml/typed-lm-serve:latest
+```
+
+Build a GPU image from source with `--build-arg FEATURES=cuda` and run it with
+`--gpus all`:
+
+```bash
+docker build -f docker/Dockerfile.serve --build-arg FEATURES=cuda -t typed-lm-serve:cuda .
+docker run --rm --gpus all -p 8080:8080 typed-lm-serve:cuda
+```
+
+### Prebuilt binaries
+
+Each [release](https://github.com/neurono-ml/typed-lm/releases) attaches binaries
+for Linux x86_64 (CPU/CUDA) and macOS arm64 (Metal):
 
 <details>
 <summary><strong>Server flags (defaults)</strong></summary>
