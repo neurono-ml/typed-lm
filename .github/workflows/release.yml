@@ -237,9 +237,7 @@ jobs:
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: '12.6.2'
-          method: network
-          sub-packages: '["nvcc", "cudart", "nvrtc"]'
-          non-cuda-sub-packages: '["libcublas", "libcurand"]'
+          method: local
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
