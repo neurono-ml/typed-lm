@@ -36,24 +36,27 @@ See [Running the server](./guides/running.md) for the full matrix.
 ### With Docker
 
 The server downloads the default model on first startup and listens on `8080`.
-Mount a context file to anchor the answers on your own facts:
+Pass an `HF_TOKEN` for gated models and mount a context file to anchor the
+answers on your own facts:
 
 ```bash
 docker run --rm -p 8080:8080 \
+  -e HF_TOKEN=<hugging-face-token> \
   -v "$PWD/resources/memory.md:/etc/typed-lm/memory.md:ro" \
   -e CONTEXT_PATH=/etc/typed-lm/memory.md \
-  ghcr.io/neurono-ml/typed-lm-serve:latest
+  ghcr.io/neurono-ml/typed-lm-serve:0.1.1
 ```
 
 To persist the downloaded weights across runs, add a volume for the Hugging
-Face cache and set `HF_HOME`:
+Face cache:
 
 ```bash
 docker run --rm -p 8080:8080 \
+  -e HF_TOKEN=<hugging-face-token> \
   -v typed-lm-cache:/root/.cache/huggingface \
   -v "$PWD/resources/memory.md:/etc/typed-lm/memory.md:ro" \
   -e CONTEXT_PATH=/etc/typed-lm/memory.md \
-  ghcr.io/neurono-ml/typed-lm-serve:latest
+  ghcr.io/neurono-ml/typed-lm-serve:0.1.1
 ```
 
 ### With cargo
@@ -111,7 +114,8 @@ live on the host. The container runs with `/work` as the working directory:
 
 ```bash
 docker run --rm -v "$PWD:/work" -w /work \
-  ghcr.io/neurono-ml/typed-lm-trainer:latest train \
+  -e HF_TOKEN=<hugging-face-token> \
+  ghcr.io/neurono-ml/typed-lm-trainer:0.1.1 train \
   --model-id /work/checkpoint \
   --dataset /work/resources/dataset.jsonl \
   --output-directory /work/output/train \
@@ -122,7 +126,9 @@ For GPU training, build a CUDA image and add `--gpus all`:
 
 ```bash
 docker build -f docker/Dockerfile.trainer --build-arg FEATURES=cuda -t typed-lm-trainer:cuda .
-docker run --rm --gpus all -v "$PWD:/work" -w /work typed-lm-trainer:cuda train \
+docker run --rm --gpus all -v "$PWD:/work" -w /work \
+  -e HF_TOKEN=<hugging-face-token> \
+  typed-lm-trainer:cuda train \
   --model-id /work/checkpoint --dataset /work/resources/dataset.jsonl \
   --output-directory /work/output/train --method lora --device cuda
 ```
@@ -147,7 +153,8 @@ The dataset format and every flag are documented in
 
 ```bash
 docker run --rm -v "$PWD:/work" -w /work \
-  ghcr.io/neurono-ml/typed-lm-trainer:latest quantize \
+  -e HF_TOKEN=<hugging-face-token> \
+  ghcr.io/neurono-ml/typed-lm-trainer:0.1.1 quantize \
   --model-id /work/checkpoint \
   --adapter-directory /work/output/train \
   --quantization fp8 --output-directory /work/output/quantized
@@ -158,8 +165,9 @@ cp /path/to/local/checkpoint/tokenizer.json output/quantized/
 
 # Serve the artifact.
 docker run --rm -p 8080:8080 \
+  -e HF_TOKEN=<hugging-face-token> \
   -v "$PWD/output/quantized:/models/quantized:ro" \
-  ghcr.io/neurono-ml/typed-lm-serve:latest \
+  ghcr.io/neurono-ml/typed-lm-serve:0.1.1 \
   --model-id /models/quantized
 ```
 

@@ -60,22 +60,24 @@ docker pull ghcr.io/neurono-ml/typed-lm-trainer:latest
 | `ghcr.io/neurono-ml/typed-lm-serve` | The Jev-compatible HTTP server |
 | `ghcr.io/neurono-ml/typed-lm-trainer` | `train` and `quantize` |
 
-Run the server, mounting a context file and a cache volume so the weights
-survive across runs:
+Run the server, passing an `HF_TOKEN` for gated models and mounting a context
+file and a cache volume so the weights survive across runs:
 
 ```bash
 docker run --rm -p 8080:8080 \
+  -e HF_TOKEN=<hugging-face-token> \
   -v typed-lm-cache:/root/.cache/huggingface \
   -v "$PWD/resources/memory.md:/etc/typed-lm/memory.md:ro" \
   -e CONTEXT_PATH=/etc/typed-lm/memory.md \
-  ghcr.io/neurono-ml/typed-lm-serve:latest
+  ghcr.io/neurono-ml/typed-lm-serve:0.1.1
 ```
 
 Run the trainer with the working directory mounted at `/work`:
 
 ```bash
 docker run --rm -v "$PWD:/work" -w /work \
-  ghcr.io/neurono-ml/typed-lm-trainer:latest train \
+  -e HF_TOKEN=<hugging-face-token> \
+  ghcr.io/neurono-ml/typed-lm-trainer:0.1.1 train \
   --model-id /work/checkpoint \
   --dataset /work/resources/dataset.jsonl \
   --output-directory /work/output/train \
@@ -88,7 +90,9 @@ the environment. For a GPU build, pass `--build-arg FEATURES=cuda` and run with
 
 ```bash
 docker build -f docker/Dockerfile.serve --build-arg FEATURES=cuda -t typed-lm-serve:cuda .
-docker run --rm --gpus all -p 8080:8080 typed-lm-serve:cuda
+docker run --rm --gpus all -p 8080:8080 \
+  -e HF_TOKEN=<hugging-face-token> \
+  typed-lm-serve:cuda
 ```
 
 ## Configuration flags

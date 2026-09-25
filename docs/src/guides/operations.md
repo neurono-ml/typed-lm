@@ -85,11 +85,12 @@ to detect a regression in request shape or cache hit rate.
 Prebuilt CPU images are published on every release:
 
 ```bash
-docker pull ghcr.io/neurono-ml/typed-lm-serve:latest
+docker pull ghcr.io/neurono-ml/typed-lm-serve:0.1.1
 docker run --rm -p 8080:8080 \
+  -e HF_TOKEN=<hugging-face-token> \
   -e CONTEXT_PATH=/etc/typed-lm/memory.md \
   -v "$PWD/resources/memory.md:/etc/typed-lm/memory.md:ro" \
-  ghcr.io/neurono-ml/typed-lm-serve:latest
+  ghcr.io/neurono-ml/typed-lm-serve:0.1.1
 ```
 
 For CUDA, build inside the devcontainer or use `cargo install --features cuda`.
