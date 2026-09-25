@@ -7,6 +7,8 @@
 //! - attention projection biases,
 //! - an explicit head dimension (Qwen3/Mistral/Gemma*),
 //! - sliding-window attention (Qwen3/Mistral/Gemma2/Gemma3),
+//! - per-head query/key normalization (Qwen3/Gemma3),
+//! - the four-normalization block layout (Gemma2/Gemma3),
 //! - logit soft-capping and the pre-attention scalar (Gemma2/Gemma3),
 //! - the RMSNorm `+1` unit offset and the embedding scale (Gemma*),
 //! - a separate local RoPE base frequency (Gemma3).
@@ -36,6 +38,17 @@ pub struct DenseArchitectureTraits {
     pub explicit_head_dimension: bool,
     /// The family may use sliding-window attention.
     pub supports_sliding_window: bool,
+    /// The family normalizes query and key **per head** before RoPE
+    /// (Qwen3/Gemma3: `self_attn.q_norm`/`k_norm`).
+    pub per_head_query_key_norm: bool,
+    /// The decoder block uses the four-normalization layout with a separate
+    /// pre/post feed-forward norm pair (Gemma2/Gemma3), instead of the
+    /// two-normalization Llama layout.
+    pub gemma_block_layout: bool,
+    /// The output projection is biased together with q/k/v when the family
+    /// declares `attention_bias` (Qwen3/Gemma*). Llama/Qwen2/Mistral never bias
+    /// the output projection (Qwen2 biases only q/k/v).
+    pub output_projection_bias: bool,
     /// The family applies `final_logit_softcapping`.
     pub supports_logit_softcapping: bool,
     /// The family applies `attn_logit_softcapping`.
@@ -70,6 +83,9 @@ impl DenseArchitectureTraits {
             attention_bias: false,
             explicit_head_dimension: false,
             supports_sliding_window: false,
+            per_head_query_key_norm: false,
+            gemma_block_layout: false,
+            output_projection_bias: false,
             supports_logit_softcapping: false,
             supports_attention_logit_softcapping: false,
             supports_query_pre_attention_scalar: false,
@@ -85,6 +101,9 @@ impl DenseArchitectureTraits {
             attention_bias: true,
             explicit_head_dimension: false,
             supports_sliding_window: false,
+            per_head_query_key_norm: false,
+            gemma_block_layout: false,
+            output_projection_bias: false,
             supports_logit_softcapping: false,
             supports_attention_logit_softcapping: false,
             supports_query_pre_attention_scalar: false,
@@ -100,6 +119,9 @@ impl DenseArchitectureTraits {
             attention_bias: true,
             explicit_head_dimension: true,
             supports_sliding_window: true,
+            per_head_query_key_norm: true,
+            gemma_block_layout: false,
+            output_projection_bias: true,
             supports_logit_softcapping: false,
             supports_attention_logit_softcapping: false,
             supports_query_pre_attention_scalar: false,
@@ -115,6 +137,9 @@ impl DenseArchitectureTraits {
             attention_bias: false,
             explicit_head_dimension: true,
             supports_sliding_window: true,
+            per_head_query_key_norm: false,
+            gemma_block_layout: false,
+            output_projection_bias: false,
             supports_logit_softcapping: false,
             supports_attention_logit_softcapping: false,
             supports_query_pre_attention_scalar: false,
@@ -127,9 +152,12 @@ impl DenseArchitectureTraits {
     fn gemma() -> Self {
         Self {
             architecture: ModelArchitecture::Gemma,
-            attention_bias: true,
+            attention_bias: false,
             explicit_head_dimension: true,
             supports_sliding_window: false,
+            per_head_query_key_norm: false,
+            gemma_block_layout: false,
+            output_projection_bias: true,
             supports_logit_softcapping: false,
             supports_attention_logit_softcapping: false,
             supports_query_pre_attention_scalar: false,
@@ -142,9 +170,12 @@ impl DenseArchitectureTraits {
     fn gemma2() -> Self {
         Self {
             architecture: ModelArchitecture::Gemma2,
-            attention_bias: true,
+            attention_bias: false,
             explicit_head_dimension: true,
             supports_sliding_window: true,
+            per_head_query_key_norm: false,
+            gemma_block_layout: true,
+            output_projection_bias: true,
             supports_logit_softcapping: true,
             supports_attention_logit_softcapping: true,
             supports_query_pre_attention_scalar: true,
@@ -157,9 +188,12 @@ impl DenseArchitectureTraits {
     fn gemma3() -> Self {
         Self {
             architecture: ModelArchitecture::Gemma3,
-            attention_bias: true,
+            attention_bias: false,
             explicit_head_dimension: true,
             supports_sliding_window: true,
+            per_head_query_key_norm: true,
+            gemma_block_layout: true,
+            output_projection_bias: true,
             supports_logit_softcapping: true,
             supports_attention_logit_softcapping: true,
             supports_query_pre_attention_scalar: true,
@@ -296,6 +330,75 @@ mod tests {
             assert!(
                 !DenseArchitectureTraits::for_architecture(architecture)
                     .supports_local_rope_base_frequency
+            );
+        }
+    }
+
+    #[test]
+    fn gemma_block_layout_is_gemma2_and_gemma3_only() {
+        for architecture in [ModelArchitecture::Gemma2, ModelArchitecture::Gemma3] {
+            assert!(
+                DenseArchitectureTraits::for_architecture(architecture).gemma_block_layout,
+                "{architecture:?} must use the four-normalization block layout"
+            );
+        }
+        for architecture in [
+            ModelArchitecture::Llama,
+            ModelArchitecture::Qwen2,
+            ModelArchitecture::Qwen3,
+            ModelArchitecture::Mistral,
+            ModelArchitecture::Gemma,
+        ] {
+            assert!(
+                !DenseArchitectureTraits::for_architecture(architecture).gemma_block_layout,
+                "{architecture:?} must use the two-normalization block layout"
+            );
+        }
+    }
+
+    #[test]
+    fn per_head_query_key_norm_is_qwen3_and_gemma3_only() {
+        for architecture in [ModelArchitecture::Qwen3, ModelArchitecture::Gemma3] {
+            assert!(
+                DenseArchitectureTraits::for_architecture(architecture).per_head_query_key_norm,
+                "{architecture:?} must normalize query and key per head"
+            );
+        }
+        for architecture in [
+            ModelArchitecture::Llama,
+            ModelArchitecture::Qwen2,
+            ModelArchitecture::Mistral,
+            ModelArchitecture::Gemma,
+            ModelArchitecture::Gemma2,
+        ] {
+            assert!(
+                !DenseArchitectureTraits::for_architecture(architecture).per_head_query_key_norm,
+                "{architecture:?} must not normalize query/key per head"
+            );
+        }
+    }
+
+    #[test]
+    fn output_projection_bias_tracks_the_attention_bias_families() {
+        for architecture in [
+            ModelArchitecture::Qwen3,
+            ModelArchitecture::Gemma,
+            ModelArchitecture::Gemma2,
+            ModelArchitecture::Gemma3,
+        ] {
+            assert!(
+                DenseArchitectureTraits::for_architecture(architecture).output_projection_bias,
+                "{architecture:?} biases the output projection when attention_bias is set"
+            );
+        }
+        for architecture in [
+            ModelArchitecture::Llama,
+            ModelArchitecture::Qwen2,
+            ModelArchitecture::Mistral,
+        ] {
+            assert!(
+                !DenseArchitectureTraits::for_architecture(architecture).output_projection_bias,
+                "{architecture:?} never biases the output projection"
             );
         }
     }

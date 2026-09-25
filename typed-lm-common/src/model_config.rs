@@ -10,6 +10,7 @@
 //! struct captures the shared surface so `ParallelLlama` can serve both
 //! architectures without duplicating the block code.
 
+use candle_nn::Activation;
 use candle_transformers::models::gemma::Config as GemmaConfig;
 use candle_transformers::models::gemma2::Config as Gemma2Config;
 use candle_transformers::models::gemma3::Config as Gemma3Config;
@@ -57,16 +58,51 @@ pub struct ParallelModelConfig {
     /// Gemma2/Gemma3 `attn_logit_softcapping`.
     pub attention_logit_softcapping: Option<f64>,
     /// Gemma2/Gemma3 attention scaling denominator (`query_pre_attn_scalar`).
+    ///
+    /// The vendored forward uses `1 / sqrt(query_pre_attention_scalar)`
+    /// (transformers semantics; official Gemma checkpoints set this equal to
+    /// `head_dim`). Candle 0.11 instead always uses `1 / sqrt(head_dim)`; the
+    /// two agree for the published checkpoints, and the parity tests set the
+    /// scalar to `head_dim` for that reason.
     pub query_pre_attention_scalar: Option<usize>,
     /// Gemma* use `(1 + weight)` instead of `weight` in RMSNorm.
     pub rms_norm_unit_offset: bool,
     /// Gemma* scale embeddings by `sqrt(hidden_size)`.
     pub embedding_scale: Option<f64>,
+    /// MLP gate activation (`silu` for Llama/Qwen/Mistral,
+    /// `gelu_pytorch_tanh` for Gemma*).
+    pub hidden_activation: Activation,
     /// Gemma3 local RoPE base frequency.
     pub rope_local_base_frequency: Option<f64>,
+    /// Gemma2/Gemma3 use the four-normalization block layout (a separate
+    /// pre/post feed-forward norm pair) instead of the two-normalization Llama
+    /// layout.
+    pub gemma_block_layout: bool,
+    /// Qwen3/Gemma3 normalize query and key per head
+    /// (`self_attn.q_norm`/`k_norm`) before RoPE.
+    pub per_head_query_key_norm: bool,
+    /// Gemma3 alternates global and local attention: every `sliding_window_pattern`
+    /// layers uses full (global) attention. Zero when the family does not
+    /// alternate (Mistral/Gemma2 apply the window uniformly; Qwen3 uses
+    /// `max_window_layers`).
+    pub sliding_window_pattern: usize,
 }
 
 impl ParallelModelConfig {
+    /// The MLP gate activation used by a family when its `config.json` does not
+    /// declare one.
+    pub fn default_hidden_activation(architecture: ModelArchitecture) -> Activation {
+        match architecture {
+            ModelArchitecture::Gemma | ModelArchitecture::Gemma2 | ModelArchitecture::Gemma3 => {
+                Activation::GeluPytorchTanh
+            }
+            ModelArchitecture::Llama
+            | ModelArchitecture::Qwen2
+            | ModelArchitecture::Qwen3
+            | ModelArchitecture::Mistral => Activation::Silu,
+        }
+    }
+
     /// Attention projections carry biases (Qwen2 does, Llama does not).
     ///
     /// Reads the concrete flag parsed from `config.json`; do not use
@@ -85,6 +121,76 @@ impl ParallelModelConfig {
             .unwrap_or(self.hidden_size / self.num_attention_heads)
     }
 
+    /// Whether the output projection carries a bias.
+    ///
+    /// Qwen3 and the Gemma families tie the output-projection bias to
+    /// `attention_bias` (candle applies the same flag to `q/k/v/o`); Qwen2
+    /// biases only `q/k/v`, and Llama/Mistral never bias the output projection.
+    pub fn output_projection_bias(&self) -> bool {
+        match self.architecture {
+            ModelArchitecture::Qwen3
+            | ModelArchitecture::Gemma
+            | ModelArchitecture::Gemma2
+            | ModelArchitecture::Gemma3 => self.attention_bias,
+            ModelArchitecture::Llama | ModelArchitecture::Qwen2 | ModelArchitecture::Mistral => {
+                false
+            }
+        }
+    }
+
+    /// Sliding-window size of every layer (`None` = full global attention).
+    ///
+    /// The choice is derived from the family, because only the *window size*
+    /// lives in the config for most families:
+    ///
+    /// - Qwen3: the first `max_window_layers` layers use full attention and the
+    ///   remaining layers use the window;
+    /// - Gemma3: a global (full-attention) layer every `sliding_window_pattern`
+    ///   layers, matching candle's `sliding_window_pattern` rule;
+    /// - Mistral and Gemma2: the window applies to every layer (candle applies
+    ///   the Gemma2 window uniformly);
+    /// - every other family: no window.
+    pub fn window_per_layer(&self) -> Vec<Option<usize>> {
+        let layer_count = self.num_hidden_layers;
+        let window = match self.sliding_window {
+            Some(window) if window > 0 => window,
+            _ => return vec![None; layer_count],
+        };
+        match self.architecture {
+            ModelArchitecture::Qwen3 => (0..layer_count)
+                .map(|index| (index >= self.max_window_layers).then_some(window))
+                .collect(),
+            ModelArchitecture::Gemma3 => {
+                let pattern = self.sliding_window_pattern.max(2);
+                (0..layer_count)
+                    .map(|index| ((index + 1) % pattern != 0).then_some(window))
+                    .collect()
+            }
+            ModelArchitecture::Mistral | ModelArchitecture::Gemma2 => {
+                vec![Some(window); layer_count]
+            }
+            ModelArchitecture::Llama | ModelArchitecture::Qwen2 | ModelArchitecture::Gemma => {
+                vec![None; layer_count]
+            }
+        }
+    }
+
+    /// Whether a layer must use the local RoPE base frequency.
+    ///
+    /// Only Gemma3 carries a local RoPE, and it is used exactly by the layers
+    /// that also use the sliding window (candle builds one rotary embedding per
+    /// layer, choosing `rope_local_base_freq` when the layer is local).
+    pub fn uses_local_rope(&self, layer_index: usize) -> bool {
+        if self.rope_local_base_frequency.is_none() {
+            return false;
+        }
+        self.window_per_layer()
+            .get(layer_index)
+            .copied()
+            .flatten()
+            .is_some()
+    }
+
     /// Builds the config from a Llama `config.json` value.
     pub fn from_llama_json(value: serde_json::Value) -> anyhow::Result<Self> {
         let llama_config: LlamaConfig = serde_json::from_value(value)
@@ -100,6 +206,7 @@ impl ParallelModelConfig {
         };
         Ok(Self {
             architecture: ModelArchitecture::Llama,
+            hidden_activation: Activation::Silu,
             vocab_size: runtime.vocab_size,
             hidden_size: runtime.hidden_size,
             intermediate_size: runtime.intermediate_size,
@@ -121,6 +228,9 @@ impl ParallelModelConfig {
             rms_norm_unit_offset: false,
             embedding_scale: None,
             rope_local_base_frequency: None,
+            gemma_block_layout: false,
+            per_head_query_key_norm: false,
+            sliding_window_pattern: 0,
         })
     }
 
@@ -130,6 +240,7 @@ impl ParallelModelConfig {
             .map_err(|error| anyhow::anyhow!("failed to parse the Qwen2 configuration: {error}"))?;
         Ok(Self {
             architecture: ModelArchitecture::Qwen2,
+            hidden_activation: Activation::Silu,
             vocab_size: config.vocab_size,
             hidden_size: config.hidden_size,
             intermediate_size: config.intermediate_size,
@@ -151,6 +262,9 @@ impl ParallelModelConfig {
             rms_norm_unit_offset: false,
             embedding_scale: None,
             rope_local_base_frequency: None,
+            gemma_block_layout: false,
+            per_head_query_key_norm: false,
+            sliding_window_pattern: 0,
         })
     }
 
@@ -165,6 +279,7 @@ impl ParallelModelConfig {
         };
         Ok(Self {
             architecture: ModelArchitecture::Qwen3,
+            hidden_activation: Activation::Silu,
             vocab_size: config.vocab_size,
             hidden_size: config.hidden_size,
             intermediate_size: config.intermediate_size,
@@ -186,6 +301,9 @@ impl ParallelModelConfig {
             rms_norm_unit_offset: false,
             embedding_scale: None,
             rope_local_base_frequency: None,
+            gemma_block_layout: false,
+            per_head_query_key_norm: true,
+            sliding_window_pattern: 0,
         })
     }
 
@@ -196,6 +314,7 @@ impl ParallelModelConfig {
         })?;
         Ok(Self {
             architecture: ModelArchitecture::Mistral,
+            hidden_activation: Activation::Silu,
             vocab_size: config.vocab_size,
             hidden_size: config.hidden_size,
             intermediate_size: config.intermediate_size,
@@ -217,15 +336,24 @@ impl ParallelModelConfig {
             rms_norm_unit_offset: false,
             embedding_scale: None,
             rope_local_base_frequency: None,
+            gemma_block_layout: false,
+            per_head_query_key_norm: false,
+            sliding_window_pattern: 0,
         })
     }
 
     /// Builds the config from a Gemma `config.json` value.
     pub fn from_gemma_json(value: serde_json::Value) -> anyhow::Result<Self> {
+        let tie_word_embeddings = read_tie_word_embeddings(&value, true);
         let config: GemmaConfig = serde_json::from_value(value)
             .map_err(|error| anyhow::anyhow!("failed to parse the Gemma configuration: {error}"))?;
+        let hidden_activation = config
+            .hidden_activation
+            .or(config.hidden_act)
+            .unwrap_or(Activation::GeluPytorchTanh);
         Ok(Self {
             architecture: ModelArchitecture::Gemma,
+            hidden_activation,
             vocab_size: config.vocab_size,
             hidden_size: config.hidden_size,
             intermediate_size: config.intermediate_size,
@@ -235,7 +363,7 @@ impl ParallelModelConfig {
             max_position_embeddings: config.max_position_embeddings,
             rms_norm_eps: config.rms_norm_eps,
             rope_theta: config.rope_theta as f32,
-            tie_word_embeddings: true,
+            tie_word_embeddings,
             rope_scaling: None,
             attention_bias: config.attention_bias,
             explicit_head_dimension: Some(config.head_dim),
@@ -247,16 +375,21 @@ impl ParallelModelConfig {
             rms_norm_unit_offset: true,
             embedding_scale: Some((config.hidden_size as f64).sqrt()),
             rope_local_base_frequency: None,
+            gemma_block_layout: false,
+            per_head_query_key_norm: false,
+            sliding_window_pattern: 0,
         })
     }
 
     /// Builds the config from a Gemma2 `config.json` value.
     pub fn from_gemma2_json(value: serde_json::Value) -> anyhow::Result<Self> {
+        let tie_word_embeddings = read_tie_word_embeddings(&value, true);
         let config: Gemma2Config = serde_json::from_value(value).map_err(|error| {
             anyhow::anyhow!("failed to parse the Gemma2 configuration: {error}")
         })?;
         Ok(Self {
             architecture: ModelArchitecture::Gemma2,
+            hidden_activation: config.hidden_activation,
             vocab_size: config.vocab_size,
             hidden_size: config.hidden_size,
             intermediate_size: config.intermediate_size,
@@ -266,7 +399,7 @@ impl ParallelModelConfig {
             max_position_embeddings: config.max_position_embeddings,
             rms_norm_eps: config.rms_norm_eps,
             rope_theta: config.rope_theta as f32,
-            tie_word_embeddings: true,
+            tie_word_embeddings,
             rope_scaling: None,
             attention_bias: config.attention_bias,
             explicit_head_dimension: Some(config.head_dim),
@@ -278,16 +411,21 @@ impl ParallelModelConfig {
             rms_norm_unit_offset: true,
             embedding_scale: Some((config.hidden_size as f64).sqrt()),
             rope_local_base_frequency: None,
+            gemma_block_layout: true,
+            per_head_query_key_norm: false,
+            sliding_window_pattern: 0,
         })
     }
 
     /// Builds the config from a Gemma3 `config.json` value.
     pub fn from_gemma3_json(value: serde_json::Value) -> anyhow::Result<Self> {
+        let tie_word_embeddings = read_tie_word_embeddings(&value, true);
         let config: Gemma3Config = serde_json::from_value(value).map_err(|error| {
             anyhow::anyhow!("failed to parse the Gemma3 configuration: {error}")
         })?;
         Ok(Self {
             architecture: ModelArchitecture::Gemma3,
+            hidden_activation: config.hidden_activation,
             vocab_size: config.vocab_size,
             hidden_size: config.hidden_size,
             intermediate_size: config.intermediate_size,
@@ -297,7 +435,7 @@ impl ParallelModelConfig {
             max_position_embeddings: config.max_position_embeddings,
             rms_norm_eps: config.rms_norm_eps,
             rope_theta: config.rope_theta as f32,
-            tie_word_embeddings: true,
+            tie_word_embeddings,
             rope_scaling: None,
             attention_bias: config.attention_bias,
             explicit_head_dimension: Some(config.head_dim),
@@ -309,6 +447,9 @@ impl ParallelModelConfig {
             rms_norm_unit_offset: true,
             embedding_scale: Some((config.hidden_size as f64).sqrt()),
             rope_local_base_frequency: Some(config.rope_local_base_freq),
+            gemma_block_layout: true,
+            per_head_query_key_norm: true,
+            sliding_window_pattern: config.sliding_window_pattern,
         })
     }
 
@@ -327,6 +468,20 @@ impl ParallelModelConfig {
             ModelArchitecture::Gemma3 => Self::from_gemma3_json(value),
         }
     }
+}
+
+/// Reads `tie_word_embeddings` from a raw `config.json` value.
+///
+/// The candle `gemma`/`gemma2`/`gemma3` `Config` structs do not carry this key,
+/// so it is read from the raw JSON before the typed parse. The families that
+/// historically forced `true` (Gemma*) pass `true` as the default, but an
+/// explicit `false` in the file is honored so an untied checkpoint's
+/// `lm_head.weight` is not silently ignored.
+fn read_tie_word_embeddings(value: &serde_json::Value, default: bool) -> bool {
+    value
+        .get("tie_word_embeddings")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(default)
 }
 
 #[cfg(test)]
@@ -518,6 +673,9 @@ mod tests {
         assert_eq!(config.sliding_window, Some(4096));
         assert!(config.rms_norm_unit_offset);
         assert!(config.rope_local_base_frequency.is_none());
+        assert!(config.gemma_block_layout);
+        assert!(!config.per_head_query_key_norm);
+        assert_eq!(config.sliding_window_pattern, 0);
         Ok(())
     }
 
@@ -549,6 +707,159 @@ mod tests {
         assert_eq!(config.rope_local_base_frequency, Some(10000.0));
         assert_eq!(config.sliding_window, Some(1024));
         assert_eq!(config.query_pre_attention_scalar, Some(256));
+        assert!(config.gemma_block_layout);
+        assert!(config.per_head_query_key_norm);
+        assert_eq!(config.sliding_window_pattern, 6);
+        Ok(())
+    }
+
+    #[test]
+    fn gemma_tie_word_embeddings_is_read_from_the_json() -> anyhow::Result<()> {
+        let base = |tie: serde_json::Value| {
+            serde_json::json!({
+                "model_type": "gemma2",
+                "attention_bias": false,
+                "head_dim": 256,
+                "hidden_activation": "gelu_pytorch_tanh",
+                "hidden_size": 2304,
+                "intermediate_size": 9216,
+                "num_attention_heads": 8,
+                "num_hidden_layers": 4,
+                "num_key_value_heads": 4,
+                "rms_norm_eps": 1e-6,
+                "rope_theta": 10000.0,
+                "vocab_size": 256000,
+                "final_logit_softcapping": 30.0,
+                "attn_logit_softcapping": 50.0,
+                "query_pre_attn_scalar": 256,
+                "sliding_window": 4096,
+                "max_position_embeddings": 8192,
+                "tie_word_embeddings": tie
+            })
+        };
+        let tied = ParallelModelConfig::from_gemma2_json(base(serde_json::json!(true)))?;
+        assert!(tied.tie_word_embeddings);
+        let untied = ParallelModelConfig::from_gemma2_json(base(serde_json::json!(false)))?;
+        assert!(!untied.tie_word_embeddings);
+        // Absent key falls back to the Gemma default of `true`.
+        let mut absent = base(serde_json::json!(true));
+        if let Some(object) = absent.as_object_mut() {
+            object.remove("tie_word_embeddings");
+        }
+        let defaulted = ParallelModelConfig::from_gemma2_json(absent)?;
+        assert!(defaulted.tie_word_embeddings);
+        Ok(())
+    }
+
+    #[test]
+    fn gemma3_window_per_layer_alternates_on_the_pattern() -> anyhow::Result<()> {
+        let value = serde_json::json!({
+            "model_type": "gemma3",
+            "attention_bias": false,
+            "head_dim": 8,
+            "hidden_activation": "gelu_pytorch_tanh",
+            "hidden_size": 32,
+            "intermediate_size": 64,
+            "num_attention_heads": 4,
+            "num_hidden_layers": 7,
+            "num_key_value_heads": 1,
+            "rms_norm_eps": 1e-6,
+            "rope_theta": 1000000.0,
+            "rope_local_base_freq": 10000.0,
+            "vocab_size": 128,
+            "final_logit_softcapping": 30.0,
+            "attn_logit_softcapping": 50.0,
+            "query_pre_attn_scalar": 256,
+            "sliding_window": 4,
+            "sliding_window_pattern": 3,
+            "max_position_embeddings": 128
+        });
+        let config = ParallelModelConfig::from_gemma3_json(value)?;
+        let windows = config.window_per_layer();
+        assert_eq!(windows.len(), 7);
+        // Layers 3 and 6 (1-based index divisible by 3) are global.
+        assert_eq!(windows[0], Some(4));
+        assert_eq!(windows[1], Some(4));
+        assert_eq!(windows[2], None);
+        assert_eq!(windows[3], Some(4));
+        assert_eq!(windows[4], Some(4));
+        assert_eq!(windows[5], None);
+        assert_eq!(windows[6], Some(4));
+        // Local layers use the local RoPE; global layers use the global one.
+        assert!(config.uses_local_rope(0));
+        assert!(!config.uses_local_rope(2));
+        Ok(())
+    }
+
+    #[test]
+    fn mistral_window_applies_to_every_layer() -> anyhow::Result<()> {
+        let value = serde_json::json!({
+            "model_type": "mistral",
+            "vocab_size": 100,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 3,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 2,
+            "max_position_embeddings": 128,
+            "rms_norm_eps": 1e-5,
+            "rope_theta": 10000.0,
+            "sliding_window": 16,
+            "hidden_act": "silu"
+        });
+        let config = ParallelModelConfig::from_mistral_json(value)?;
+        assert_eq!(config.window_per_layer(), vec![Some(16); 3]);
+        Ok(())
+    }
+
+    #[test]
+    fn output_projection_bias_follows_the_family() -> anyhow::Result<()> {
+        let qwen2 = ParallelModelConfig::from_json_for_architecture(
+            serde_json::json!({
+                "model_type": "qwen2",
+                "hidden_size": 64,
+                "intermediate_size": 128,
+                "num_hidden_layers": 2,
+                "num_attention_heads": 8,
+                "num_key_value_heads": 2,
+                "vocab_size": 100,
+                "max_position_embeddings": 128,
+                "rms_norm_eps": 1e-6,
+                "rope_theta": 1000000.0,
+                "tie_word_embeddings": true,
+                "attention_bias": true,
+                "sliding_window": 128,
+                "max_window_layers": 2,
+                "use_sliding_window": false,
+                "hidden_act": "silu"
+            }),
+            ModelArchitecture::Qwen2,
+        )?;
+        // Qwen2 biases only q/k/v, never the output projection.
+        assert!(qwen2.has_query_key_value_bias());
+        assert!(!qwen2.output_projection_bias());
+
+        let gemma2 = ParallelModelConfig::from_gemma2_json(serde_json::json!({
+            "model_type": "gemma2",
+            "attention_bias": true,
+            "head_dim": 8,
+            "hidden_activation": "gelu_pytorch_tanh",
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_attention_heads": 8,
+            "num_hidden_layers": 2,
+            "num_key_value_heads": 2,
+            "rms_norm_eps": 1e-6,
+            "rope_theta": 10000.0,
+            "vocab_size": 100,
+            "final_logit_softcapping": 30.0,
+            "attn_logit_softcapping": 50.0,
+            "query_pre_attn_scalar": 8,
+            "sliding_window": 64,
+            "max_position_embeddings": 128
+        }))?;
+        // Gemma2 ties the output-projection bias to `attention_bias`.
+        assert!(gemma2.output_projection_bias());
         Ok(())
     }
 
