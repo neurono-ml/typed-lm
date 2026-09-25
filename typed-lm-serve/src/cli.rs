@@ -58,7 +58,7 @@ pub struct ServeArguments {
     pub context_path: Option<PathBuf>,
 
     /// Public model name announced in /v1/models and in responses.
-    #[arg(long, env = "SERVED_MODEL_NAME", default_value = "jev-latest")]
+    #[arg(long, env = "SERVED_MODEL_NAME", default_value = "typed-lm")]
     pub served_model_name: String,
 
     /// Hugging Face access token for gated models.

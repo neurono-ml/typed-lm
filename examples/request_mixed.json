@@ -1,5 +1,5 @@
 {
-  "model": "jev-latest",
+  "model": "typed-lm",
   "state": "Order #7710 arrived with a smashed box and a cracked vase inside. Delivery was 3 days ago and the customer asks what to do next.",
   "questions": {
     "refund_eligible": {

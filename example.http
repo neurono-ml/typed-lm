@@ -5,7 +5,7 @@ POST {{host}}/v1/systemone
 Content-Type: application/json
 
 {
-  "model": "jev-latest",
+  "model": "typed-lm",
   "state": "The customer found a duplicate charge for order #4821 on their credit card. The duplicate charge is 180 days old and they request a full refund of the duplicate.",
   "questions": {
     "refund_eligible": {
@@ -20,7 +20,7 @@ POST {{host}}/v1/systemone
 Content-Type: application/json
 
 {
-  "model": "jev-latest",
+  "model": "typed-lm",
   "state": "Order #7710 arrived with a smashed box and a cracked vase inside. Delivery was 3 days ago and the customer asks what to do next.",
   "questions": {
     "refund_eligible": {
@@ -50,7 +50,7 @@ POST {{host}}/v1/systemone
 Content-Type: application/json
 
 {
-  "model": "jev-latest",
+  "model": "typed-lm",
   "state": "The customer received a medical-grade air purifier they depend on daily for a respiratory condition. It arrived 5 days ago with a cracked casing, does not power on, and troubleshooting by phone failed. They request a full refund of 1200 dollars and a working unit as fast as possible.",
   "questions": {
     "refund_eligible": {

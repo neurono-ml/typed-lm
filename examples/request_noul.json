@@ -1,5 +1,5 @@
 {
-  "model": "jev-latest",
+  "model": "typed-lm",
   "state": "The customer found a duplicate charge for order #4821 on their credit card. The duplicate charge is 60 days old and they request a full refund of the duplicate.",
   "questions": {
     "refund_eligible": {

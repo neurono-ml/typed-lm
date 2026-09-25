@@ -1,5 +1,5 @@
 {
-  "model": "jev-latest",
+  "model": "typed-lm",
   "state": "The customer received a medical-grade air purifier they depend on daily for a respiratory condition. It arrived 5 days ago with a cracked casing, does not power on, and troubleshooting by phone failed. They request a full refund of 1200 dollars and a working unit as fast as possible.",
   "questions": {
     "refund_eligible": {

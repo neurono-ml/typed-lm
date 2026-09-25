@@ -51,9 +51,9 @@ pub fn longest_common_prefix(sequences: &[Vec<u32>]) -> usize {
     shared_length
 }
 
-/// Accepts a model name when it matches the served model or a Jev alias.
+/// Accepts a request when its model name matches the served model name.
 pub fn is_supported_model(requested_model: &str, served_model_name: &str) -> bool {
-    requested_model == served_model_name || requested_model.starts_with("jev-")
+    requested_model == served_model_name
 }
 
 /// Builds the Rig conversation history: the loaded context as preamble and
@@ -442,9 +442,9 @@ mod tests {
     }
 
     #[test]
-    fn supported_models_match_served_name_or_jev_prefix() {
+    fn supported_models_match_the_served_name() {
         assert!(is_supported_model("typed-lm-1", "typed-lm-1"));
-        assert!(is_supported_model("jev-latest", "typed-lm-1"));
+        assert!(!is_supported_model("typedef-lm", "typed-lm-1"));
         assert!(!is_supported_model("ghost-model", "typed-lm-1"));
     }
 
@@ -453,7 +453,7 @@ mod tests {
         let raw = serde_json::json!({
             "refund": {"type": "noul", "instructions": "Refund?"}
         });
-        let request = request_with_model("jev-latest", raw)?;
+        let request = request_with_model("typed-lm", raw)?;
         let missing_question = anyhow::anyhow!("missing question 'refund'");
         let question = request.questions.get("refund").ok_or(missing_question)?;
         let answer = answer_from_probabilities(question, &[0.8, 0.2]);
@@ -473,7 +473,7 @@ mod tests {
                 "criteria": {"billing": "Payments", "technical": "Bugs"}
             }
         });
-        let request = request_with_model("jev-latest", raw)?;
+        let request = request_with_model("typed-lm", raw)?;
         let missing_question = anyhow::anyhow!("missing question 'department'");
         let question = request
             .questions
@@ -500,7 +500,7 @@ mod tests {
                 "criteria": ["Routine", "Urgent", "Emergency"]
             }
         });
-        let request = request_with_model("jev-latest", raw)?;
+        let request = request_with_model("typed-lm", raw)?;
         let missing_question = anyhow::anyhow!("missing question 'urgency'");
         let question = request.questions.get("urgency").ok_or(missing_question)?;
         let answer = answer_from_probabilities(question, &[0.0, 0.0, 1.0]);
@@ -592,13 +592,27 @@ mod tests {
     }
 
     #[test]
-    fn mock_evaluator_accepts_jev_prefixed_models() -> anyhow::Result<()> {
+    fn mock_evaluator_accepts_only_the_served_model_name() -> anyhow::Result<()> {
         let evaluator = MockEvaluator::new("typed-lm-1".to_string());
-        let request = request_with_model(
+
+        let accepted = request_with_model(
+            "typed-lm-1",
+            serde_json::json!({"refund": {"type": "noul", "instructions": "Refund?"}}),
+        )?;
+        assert!(evaluator.evaluate(&accepted).is_ok());
+
+        let rejected = request_with_model(
             "jev-experimental",
             serde_json::json!({"refund": {"type": "noul", "instructions": "Refund?"}}),
         )?;
-        assert!(evaluator.evaluate(&request).is_ok());
+        let result = evaluator.evaluate(&rejected);
+        let Err(error) = result else {
+            return Err(anyhow::anyhow!("an unrelated model name must be rejected"));
+        };
+        match error {
+            EvaluationError::UnknownModel(_) => {}
+            other => panic!("expected unknown model error, got {other:?}"),
+        }
         Ok(())
     }
 }

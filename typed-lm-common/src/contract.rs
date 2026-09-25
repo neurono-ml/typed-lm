@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn parses_all_three_question_types() -> anyhow::Result<()> {
         let raw = serde_json::json!({
-            "model": "jev-latest",
+            "model": "typed-lm",
             "state": "charged twice",
             "questions": {
                 "refund": {"type": "noul", "instructions": "Refund?"},
@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn rejects_unknown_question_type() {
         let raw = serde_json::json!({
-            "model": "jev-latest",
+            "model": "typed-lm",
             "state": "x",
             "questions": {"q": {"type": "unknown"}}
         });
@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn instructions_are_required_by_the_official_contract() {
         let raw = serde_json::json!({
-            "model": "jev-latest",
+            "model": "typed-lm",
             "state": "x",
             "questions": {"q": {"type": "noul"}}
         });
@@ -146,7 +146,7 @@ mod tests {
 
     fn request_with(questions: serde_json::Value) -> anyhow::Result<SystemOneRequest> {
         let raw = serde_json::json!({
-            "model": "jev-latest", "state": "x", "questions": questions
+            "model": "typed-lm", "state": "x", "questions": questions
         });
         Ok(serde_json::from_value(raw)?)
     }
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn empty_questions_map_is_rejected() -> anyhow::Result<()> {
         let raw = serde_json::json!({
-            "model": "jev-latest", "state": "x", "questions": {}
+            "model": "typed-lm", "state": "x", "questions": {}
         });
         let request: SystemOneRequest = serde_json::from_value(raw)?;
         assert!(request.validate().is_err());

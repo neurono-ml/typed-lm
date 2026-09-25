@@ -29,6 +29,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// Public model name the spawned server announces over `/v1/models` and echoes
+/// in every response.
+const SERVED_MODEL_NAME: &str = "typed-lm";
+
 /// Locates the `typed-lm-trainer` binary built by Cargo.
 ///
 /// The binary belongs to a sibling crate, so Cargo does not inject a
@@ -142,7 +146,7 @@ fn spawn_server(model_directory: &Path, port: u16) -> anyhow::Result<ServerProce
         .arg("--model-id")
         .arg(model_directory)
         .arg("--served-model-name")
-        .arg("jev-latest")
+        .arg(SERVED_MODEL_NAME)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
@@ -262,14 +266,14 @@ fn train_quantize_serve_round_trip_over_http() -> anyhow::Result<()> {
     assert_eq!(status, 200, "health body: {body}");
     assert!(body.contains("startup_seconds"), "health body: {body}");
 
-    // 3c. Model listing announces the served model and the `jev-` alias.
+    // 3c. Model listing announces the served model.
     let (status, body) = http_request(host, port, "GET", "/v1/models", None)?;
     assert_eq!(status, 200, "models body: {body}");
-    assert!(body.contains("jev-latest"), "models body: {body}");
+    assert!(body.contains(SERVED_MODEL_NAME), "models body: {body}");
 
     // 3d. Typed evaluation covering all three question types in one request.
     let request = serde_json::json!({
-        "model": "jev-latest",
+        "model": SERVED_MODEL_NAME,
         "state": "charged twice",
         "questions": {
             "refund": {
@@ -297,7 +301,7 @@ fn train_quantize_serve_round_trip_over_http() -> anyhow::Result<()> {
         ));
     }
     let response: serde_json::Value = serde_json::from_str(&body)?;
-    assert_eq!(response["model"], "jev-latest");
+    assert_eq!(response["model"], SERVED_MODEL_NAME);
     assert!(response["usage"]["input_tokens"].as_u64().is_some());
     let answers = response["answers"]
         .as_object()
@@ -437,7 +441,7 @@ fn from_scratch_artifact_is_quantized_and_served() -> anyhow::Result<()> {
     }
 
     let request = serde_json::json!({
-        "model": "jev-latest",
+        "model": SERVED_MODEL_NAME,
         "state": "charged twice",
         "questions": {
             "refund": {"type": "noul", "instructions": "Refund?"}

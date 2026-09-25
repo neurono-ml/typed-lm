@@ -482,7 +482,7 @@ mod tests {
 
         let context = "Fact 1: a double charge is always fully refundable.".to_string();
         let request: SystemOneRequest = serde_json::from_value(serde_json::json!({
-            "model": "jev-latest",
+            "model": "typed-lm",
             "state": "{\"amount\": 42.0, \"merchant\": \"GreenLeaf\"}",
             "questions": {
                 "refund": {"type": "noul", "instructions": "Should this be refunded?"},
@@ -497,13 +497,13 @@ mod tests {
         let cached = CandleEvaluator::new(
             &model,
             context.clone(),
-            "jev-latest".to_string(),
+            "typed-lm".to_string(),
             SessionCacheConfiguration::default(),
         )?;
         let uncached = CandleEvaluator::new(
             &model,
             context,
-            "jev-latest".to_string(),
+            "typed-lm".to_string(),
             SessionCacheConfiguration {
                 maximum_entries: 0,
                 maximum_tokens: 0,

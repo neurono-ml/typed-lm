@@ -92,7 +92,7 @@ async fn models_lists_served_model_with_alias() {
         .map(|entry| entry["id"].as_str().unwrap_or(""))
         .collect();
     assert!(identifiers.contains(&SERVED_MODEL_NAME));
-    assert!(identifiers.contains(&"jev-latest"));
+    assert_eq!(identifiers.len(), 1);
     let model_entries: &[serde_json::Value] = body["models"]
         .as_array()
         .map(Vec::as_slice)
