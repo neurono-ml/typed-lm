@@ -13,7 +13,7 @@
     on. No text generation, no parsing.
   </p>
   <div class="sk-btn-row">
-    <a class="sk-btn sk-btn--star" href="https://github.com/neurono-ml/typed-lm/stargazers">⭐ Star on GitHub</a>
+    <a class="sk-btn sk-btn--star" href="https://github.com/neurono-ml/typed-lm">⭐ Star on GitHub</a>
     <a class="sk-btn sk-btn--primary" href="./quickstart.html">Quick start</a>
     <a class="sk-btn sk-btn--secondary" href="./guides/api.html">API reference</a>
   </div>
@@ -123,7 +123,7 @@ server, send your first request and train a LoRA adapter.
   <p>typed-lm is open source (Apache-2.0) and advances crate by crate. Contributions are
   welcome — from datasets and prompts to CUDA backends.</p>
   <div class="sk-btn-row">
-    <a class="sk-btn sk-btn--star" href="https://github.com/neurono-ml/typed-lm/stargazers">⭐ Leave a star</a>
+    <a class="sk-btn sk-btn--star" href="https://github.com/neurono-ml/typed-lm">⭐ Leave a star</a>
     <a class="sk-btn sk-btn--primary" href="./community/contributing.html">How to contribute</a>
   </div>
 </div>
