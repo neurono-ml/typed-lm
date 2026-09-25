@@ -284,12 +284,28 @@ and trains **all** parameters. Because there is no checkpoint to read the shape
 or the tokenizer from, both must be supplied:
 
 - the geometry via the flags (`--architecture`, `--vocab-size`, `--hidden-size`,
-  `--num-hidden-layers`, `--num-attention-heads`, …) or the TOML `[model]`
-  section;
+  `--num-hidden-layers`, `--num-attention-heads`, `--head-dim`,
+  `--rope-theta`, …) or the TOML `[model]` section;
 - a tokenizer via `--tokenizer-file` (or the TOML `[tokenizer] file` key).
 
-Initialization is deterministic and reproducible from `--seed` (default `42`);
-RMSNorm weights are set to `1.0` and biases to `0.0`.
+`--model-id` is ignored for `from-scratch`: the geometry flags (or the TOML
+`[model]` section) are authoritative, and `from-scratch` is mutually exclusive
+with a checkpoint base. Absent geometry keys take the family default (for
+example the Gemma2/Gemma3 soft-caps and local RoPE), so the emitted
+`config.json` is always serveable.
+
+Initialization is deterministic and reproducible from `--seed` (default `42`).
+By default the projection weights are drawn from a zero-mean normal with
+standard deviation `0.02` (`initializer_range`), the embeddings (and an untied
+`lm_head`) with `embedding_std = 0.02`, RMSNorm weights are set to `1.0`
+(`norm_weight`) and biases to `0.0` (`bias_value`). All four are configurable
+through the TOML `[initialization]` section (see the
+[configuration file reference](configuration-file.md)).
+
+> **Cost.** Every parameter keeps an F32 master weight plus AdamW moments, so
+> full and from-scratch training use much more memory and compute than LoRA.
+> Treat them as a way to validate a small geometry, the dataset and the
+> pipeline — not as a path to train a 1B+ base.
 
 ```bash
 cargo run --release -p typed-lm-trainer -- train \
@@ -317,6 +333,16 @@ output/scratch/
 ├── config.json         # reparseable model configuration
 └── tokenizer.json      # copy of the tokenizer passed with --tokenizer-file
 ```
+
+The `model.safetensors` names are the canonical Hugging Face ones the serving
+loader reads: `model.embed_tokens.weight`, `model.norm.weight`,
+`model.layers.N.input_layernorm.weight`,
+`model.layers.N.post_attention_layernorm.weight`,
+`model.layers.N.self_attn.{q,k,v,o}_proj.weight`, the Gemma2/Gemma3
+`pre_feedforward_layernorm`/`post_feedforward_layernorm` and
+`self_attn.{q,k}_norm` weights, the `mlp.{gate,up,down}_proj.weight`, plus
+`lm_head.weight` when the embeddings are untied. The `full` method emits the
+same names from an existing checkpoint.
 
 This directory is a fully resolved checkpoint: point `typed-lm-serve` at it
 without any further copy or merge step:
@@ -361,7 +387,11 @@ cargo run --release -p typed-lm-trainer -- quantize \
 ```
 
 - `--adapter-directory` is optional: when given, the adapter is merged into the
-  base weights before quantization.
+  base weights before quantization; when omitted, the merge is a no-op and the
+  base checkpoint is quantized as-is.
+- `--model-id` accepts any dense checkpoint directory, including one written by
+  `--method full`/`from-scratch`, so a from-scratch artifact can be quantized
+  directly.
 - Output: `model.safetensors` + `quantization_config.json`.
 - `fp8` uses `F8_E4M3` tensors with per-channel scaling (`*_scale`).
 - `fp4` (MXFP4) writes E2M1 nibbles packed into `U8` plus `F8E8M0` exponents
