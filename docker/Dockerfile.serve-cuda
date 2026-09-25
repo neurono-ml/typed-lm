@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1
+#
+# CUDA container image for the `typed-lm-serve` binary.
+#
+# Build from the repository root:
+#   docker build -f docker/Dockerfile.serve-cuda -t typed-lm-serve:cuda .
+#
+# Multi-stage: the builder installs the CUDA toolkit and the Rust toolchain and
+# compiles with `--features cuda`; the runtime carries only the CUDA runtime
+# libraries candle needs (cudart, cublas, curand, nvrtc) - not the full toolkit.
+#
+# Requires the NVIDIA Container Toolkit on the host and `--gpus all` at run
+# time (verify with: docker run --rm --gpus all <image> nvidia-smi).
+
+# --- Builder -----------------------------------------------------------------
+# CUDA 12.6 devel on Ubuntu 24.04 provides nvcc and the headers; the matching
+# Ubuntu 24.04 runtime base keeps the glibc consistent with the build.
+FROM nvidia/cuda:12.6.2-devel-ubuntu24.04 AS builder
+ARG CUDA_COMPUTE_CAP="80"
+WORKDIR /build
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl build-essential cmake pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+# Rust toolchain (stable) inside the image, independent of the host.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --profile minimal --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+COPY . .
+# Drop the repository's host-specific tuning so the image stays portable.
+RUN rm -f .cargo/config.toml
+RUN CUDA_COMPUTE_CAP="${CUDA_COMPUTE_CAP}" \
+    cargo build --release -p typed-lm-serve --features cuda
+
+# --- Runtime -----------------------------------------------------------------
+# The `runtime` base ships the CUDA math libraries; the `base` flavour would
+# only ship cudart and the binary would fail to load libcublas/libcurand.
+FROM nvidia/cuda:12.6.2-runtime-ubuntu24.04 AS runtime
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /build/target/release/typed-lm-serve /usr/local/bin/typed-lm-serve
+RUN chmod 0755 /usr/local/bin/typed-lm-serve
+# The server binds 0.0.0.0:8080 by default.
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/typed-lm-serve"]

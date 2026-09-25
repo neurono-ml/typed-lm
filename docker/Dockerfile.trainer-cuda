@@ -1,0 +1,38 @@
+# syntax=docker/dockerfile:1
+#
+# CUDA container image for the `typed-lm-trainer` binary (subcommands `train`
+# and `quantize`).
+#
+# Build from the repository root:
+#   docker build -f docker/Dockerfile.trainer-cuda -t typed-lm-trainer:cuda .
+#
+# Multi-stage: the builder installs the CUDA toolkit and the Rust toolchain and
+# compiles with `--features cuda`; the runtime carries only the CUDA runtime
+# libraries candle needs (cudart, cublas, curand, nvrtc) - not the full toolkit.
+#
+# Requires the NVIDIA Container Toolkit on the host and `--gpus all` at run
+# time.
+
+# --- Builder -----------------------------------------------------------------
+FROM nvidia/cuda:12.6.2-devel-ubuntu24.04 AS builder
+ARG CUDA_COMPUTE_CAP="80"
+WORKDIR /build
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl build-essential cmake pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --profile minimal --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+COPY . .
+RUN rm -f .cargo/config.toml
+RUN CUDA_COMPUTE_CAP="${CUDA_COMPUTE_CAP}" \
+    cargo build --release -p typed-lm-trainer --features cuda
+
+# --- Runtime -----------------------------------------------------------------
+FROM nvidia/cuda:12.6.2-runtime-ubuntu24.04 AS runtime
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /build/target/release/typed-lm-trainer /usr/local/bin/typed-lm-trainer
+RUN chmod 0755 /usr/local/bin/typed-lm-trainer
+ENTRYPOINT ["/usr/local/bin/typed-lm-trainer"]

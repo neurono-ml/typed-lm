@@ -274,11 +274,12 @@ jobs:
           TAG: ${{ needs.release.outputs.tag }}
         run: gh release upload "$TAG" dist/*.tar.gz dist/*.sha256 --clobber
 
-  # Container images for the binaries, published to the GitHub Container
-  # Registry. Built from the prebuilt CPU binaries so the image build does not
-  # recompile the whole dependency tree.
+  # CPU container images, published to the GitHub Container Registry. Built
+  # from the prebuilt CPU binaries so the image build does not recompile the
+  # whole dependency tree. `latest` and the bare `<version>` tags are CPU; the
+  # CUDA images live in the `docker-cuda` job with a `-cuda` suffix.
   docker:
-    name: Publish container images
+    name: Publish CPU container images
     needs: [release, build-cpu]
     runs-on: ubuntu-latest
     steps:
@@ -323,6 +324,55 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/typed-lm-trainer:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/typed-lm-trainer:${{ needs.release.outputs.version }}
+
+  # CUDA container images, tagged with a `-cuda` suffix so they never shadow the
+  # CPU images. Unlike the CPU job, these are multi-stage builds that compile
+  # the binaries inside the image, because the CUDA runtime base must match the
+  # toolkit used for the build (a prebuilt binary cannot be safely dropped onto
+  # an arbitrary nvidia/cuda base). GitHub-hosted runners have no GPU to smoke
+  # test the image, so this job is best effort and does not block the release.
+  docker-cuda:
+    name: Publish CUDA container images
+    needs: [release]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push typed-lm-serve (CUDA)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.serve-cuda
+          push: true
+          build-args: |
+            CUDA_COMPUTE_CAP=80
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/typed-lm-serve:cuda
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/typed-lm-serve:${{ needs.release.outputs.version }}-cuda
+
+      - name: Build and push typed-lm-trainer (CUDA)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.trainer-cuda
+          push: true
+          build-args: |
+            CUDA_COMPUTE_CAP=80
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/typed-lm-trainer:cuda
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/typed-lm-trainer:${{ needs.release.outputs.version }}-cuda
 
   # 4. Publish stage: crates.io. `typed-lm-common` goes first, then the two
   #    binaries wait for the index to expose it before publishing.
