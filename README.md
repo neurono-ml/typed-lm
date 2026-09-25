@@ -2,12 +2,22 @@
 
 # typed-lm
 
-**Structured decisions in a single forward pass.**
+`Deterministic inference · Adapter training · Apache-2.0`
 
-Turn dense decoder models — Llama, Qwen2, Qwen3, Mistral, Gemma, Gemma2 and
-Gemma3 — into a typed semantic-routing API. Send a *state* and typed *questions*;
-receive booleans, choices and scores your code can branch on. No text generation,
-no parsing.
+### Structured decisions in a single forward pass.
+
+**typed-lm** turns dense decoder models — Llama, Qwen2, Qwen3, Mistral, Gemma,
+Gemma2 and Gemma3 — into a typed semantic-routing API. Send a *state* and typed
+*questions*; receive booleans, choices and scores your code can branch on. No
+text generation, no parsing.
+
+[![Star on GitHub](https://img.shields.io/badge/⭐_Star_on_GitHub-18181b?style=for-the-badge)](https://github.com/neurono-ml/typed-lm)
+[![Quick start](https://img.shields.io/badge/Quick_start-6d28d9?style=for-the-badge)](https://neurono-ml.github.io/typed-lm/quickstart.html)
+[![API reference](https://img.shields.io/badge/API_reference-2563eb?style=for-the-badge)](https://neurono-ml.github.io/typed-lm/guides/api.html)
+
+| **7** | **3** | **4** | **1** |
+|:---:|:---:|:---:|:---:|
+| dense model families | question primitives | training methods | forward pass per request |
 
 [![Docs](https://img.shields.io/badge/docs-neurono--ml.github.io-6d28d9?logo=readthedocs&logoColor=white)](https://neurono-ml.github.io/typed-lm/)
 [![CI](https://github.com/neurono-ml/typed-lm/actions/workflows/ci.yml/badge.svg)](https://github.com/neurono-ml/typed-lm/actions/workflows/ci.yml)
@@ -16,16 +26,44 @@ no parsing.
 [![Downloads](https://img.shields.io/crates/d/typed-lm-serve?color=3b82f6)](https://crates.io/crates/typed-lm-serve)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2021-orange?logo=rust)](https://www.rust-lang.org/)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-10b981)](https://github.com/neurono-ml/typed-lm/blob/main/AGENTS.md)
-
-[Quick start](https://neurono-ml.github.io/typed-lm/quickstart.html) ·
-[API](https://neurono-ml.github.io/typed-lm/guides/api.html) ·
-[Training](https://neurono-ml.github.io/typed-lm/training/index.html) ·
-[Architectures](https://neurono-ml.github.io/typed-lm/reference/architectures.html)
 
 </div>
 
----
+## Performance
+
+One forward pass means **milliseconds, not seconds**. On a single RTX 3070 with
+F16 weights, a full request — the shared prefill plus five batched question
+suffixes — is answered in tens to hundreds of milliseconds.
+
+**GPU** (release, Qwen2.5-1.5B, `F16`, RTX 3070):
+
+| Prefix | prefill | 5 batched suffixes | single next token |
+|---|---|---|---|
+| 64 | **14 ms** | **36 ms** | **52 ms** |
+| 256 | **31 ms** | **81 ms** | **65 ms** |
+| 1024 | **154 ms** | **379 ms** | **64 ms** |
+
+Adding a question adds a suffix to the same batched pass, not a new request, so
+latency grows with the prefix length — not with the number of questions.
+
+<details>
+<summary><strong>CPU numbers</strong> (release, dense <code>F32</code>)</summary>
+
+| Prefix | Stage | Baseline | + CPU flash | + MKL |
+|---|---|---|---|---|
+| 64 | prefill | 3.13 s | 2.34 s | **0.52 s** |
+| 256 | prefill | 8.65 s | 4.97 s | **1.69 s** |
+| 1024 | prefill | 28.23 s | 20.66 s | **13.13 s** |
+| 64 | 5 batched suffixes | 1.44 s | 1.33 s | **0.25 s** |
+| 256 | 5 batched suffixes | 2.47 s | 1.98 s | **0.35 s** |
+| 1024 | 5 batched suffixes | 4.74 s | 4.59 s | **2.57 s** |
+
+The recommended CPU mode is a GGUF `Q4_K_M` checkpoint with the `mkl` feature.
+
+</details>
+
+The session prefix cache skips the prefill entirely for repeated states. More in
+[benchmarks](https://neurono-ml.github.io/typed-lm/engineering/benchmarks.html).
 
 ## The idea
 
@@ -89,42 +127,6 @@ the same binary.
 </td>
 </tr>
 </table>
-
-## Performance
-
-One forward pass means **milliseconds, not seconds**. On a single RTX 3070 with
-F16 weights, a full request — the shared prefill plus five batched question
-suffixes — is answered in tens to hundreds of milliseconds.
-
-**GPU** (release, Qwen2.5-1.5B, `F16`, RTX 3070):
-
-| Prefix | prefill | 5 batched suffixes | single next token |
-|---|---|---|---|
-| 64 | **14 ms** | **36 ms** | **52 ms** |
-| 256 | **31 ms** | **81 ms** | **65 ms** |
-| 1024 | **154 ms** | **379 ms** | **64 ms** |
-
-Adding a question adds a suffix to the same batched pass, not a new request, so
-latency grows with the prefix length — not with the number of questions.
-
-<details>
-<summary><strong>CPU numbers</strong> (release, dense <code>F32</code>)</summary>
-
-| Prefix | Stage | Baseline | + CPU flash | + MKL |
-|---|---|---|---|---|
-| 64 | prefill | 3.13 s | 2.34 s | **0.52 s** |
-| 256 | prefill | 8.65 s | 4.97 s | **1.69 s** |
-| 1024 | prefill | 28.23 s | 20.66 s | **13.13 s** |
-| 64 | 5 batched suffixes | 1.44 s | 1.33 s | **0.25 s** |
-| 256 | 5 batched suffixes | 2.47 s | 1.98 s | **0.35 s** |
-| 1024 | 5 batched suffixes | 4.74 s | 4.59 s | **2.57 s** |
-
-The recommended CPU mode is a GGUF `Q4_K_M` checkpoint with the `mkl` feature.
-
-</details>
-
-The session prefix cache skips the prefill entirely for repeated states. More in
-[benchmarks](https://neurono-ml.github.io/typed-lm/engineering/benchmarks.html).
 
 ## The three primitives
 
