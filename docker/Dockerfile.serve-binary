@@ -1,0 +1,13 @@
+# syntax=docker/dockerfile:1
+#
+# Thin runtime image around a prebuilt `typed-lm-serve` binary. Used by the
+# release workflow, which downloads the binary built on the runner into ./dist.
+# For a from-source build use docker/Dockerfile.serve instead.
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY dist/typed-lm-serve /usr/local/bin/typed-lm-serve
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/typed-lm-serve"]

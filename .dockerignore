@@ -1,0 +1,13 @@
+# Build context exclusions for the Docker images and for CI.
+target/
+temporary/
+.worktrees/
+.git/
+.github/
+.vscode/
+.devcontainer/
+docs/
+examples/
+resources/
+reports/
+*.tar.gz

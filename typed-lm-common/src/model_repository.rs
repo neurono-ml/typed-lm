@@ -1,4 +1,4 @@
-use hf_hub::api::sync::{ApiBuilder, ApiRepo};
+use hf_hub::{split_id, HFClient, HFClientSync, HFRepositorySync, RepoTypeModel};
 use std::path::PathBuf;
 
 /// Files a repository must expose to be servable by this crate.
@@ -33,7 +33,8 @@ pub fn missing_model_files(available_file_names: &[String]) -> Vec<&'static str>
 /// falling back to the `HF_TOKEN` environment variable via clap).
 /// This type never reads environment variables itself.
 pub struct ModelRepository {
-    repo: ApiRepo,
+    repo: HFRepositorySync<RepoTypeModel>,
+    revision: String,
     #[allow(dead_code)]
     model_identifier: String,
     #[allow(dead_code)]
@@ -52,21 +53,21 @@ impl ModelRepository {
         revision: &str,
         hugging_face_token: Option<String>,
     ) -> anyhow::Result<Self> {
-        let api = ApiBuilder::new()
-            .with_token(hugging_face_token.clone())
-            .build()?;
+        let mut client_builder = HFClient::builder();
+        if let Some(token) = hugging_face_token.clone() {
+            client_builder = client_builder.token(token);
+        }
+        let client = HFClientSync::from_inner(client_builder.build()?)?;
         let revision = if revision.is_empty() {
             "main"
         } else {
             revision
         };
-        let repo = api.repo(hf_hub::Repo::with_revision(
-            model_identifier.to_string(),
-            hf_hub::RepoType::Model,
-            revision.to_string(),
-        ));
+        let (owner, name) = split_id(model_identifier);
+        let repo = client.model(owner, name);
         Ok(Self {
             repo,
+            revision: revision.to_string(),
             model_identifier: model_identifier.to_string(),
             hugging_face_token,
         })
@@ -86,28 +87,39 @@ impl ModelRepository {
 
     /// Lists the file names exposed by the repository (a single Hub request).
     pub fn available_file_names(&self) -> anyhow::Result<Vec<String>> {
-        let repository_info = self.repo.info().map_err(|error| {
-            anyhow::anyhow!(
-                "failed to inspect repository '{}': {error}. \
-                 If the model is gated, pass --hf-token (or HF_TOKEN) of a token with access.",
-                self.model_identifier
-            )
-        })?;
+        let repository_info = self
+            .repo
+            .info()
+            .maybe_revision(Some(self.revision.clone()))
+            .send()
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to inspect repository '{}': {error}. \
+                     If the model is gated, pass --hf-token (or HF_TOKEN) of a token with access.",
+                    self.model_identifier
+                )
+            })?;
         Ok(repository_info
             .siblings
-            .iter()
-            .map(|sibling| sibling.rfilename.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|sibling| sibling.rfilename)
             .collect())
     }
 
     /// Downloads (or reuses from cache) a single named file.
     pub fn download(&self, name: &str) -> anyhow::Result<PathBuf> {
-        self.repo.get(name).map_err(|error| {
-            anyhow::anyhow!(
-                "failed to download '{name}': {error}. \
-                 If the model is gated, pass --hf-token (or HF_TOKEN) of a token with access."
-            )
-        })
+        self.repo
+            .download_file()
+            .filename(name)
+            .maybe_revision(Some(self.revision.clone()))
+            .send()
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to download '{name}': {error}. \
+                     If the model is gated, pass --hf-token (or HF_TOKEN) of a token with access."
+                )
+            })
     }
 
     /// Verifies, before downloading, that the repository actually exposes a

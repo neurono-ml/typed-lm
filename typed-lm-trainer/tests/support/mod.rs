@@ -148,14 +148,14 @@ pub fn write_tokenizer_with_extra(path: &Path, extra_tokens: &[&str]) -> anyhow:
     for (offset, token) in extra_tokens.iter().enumerate() {
         vocabulary.push(((*token).to_string(), 19 + offset as u32));
     }
-    let words: HashMap<String, u32> = vocabulary.into_iter().collect();
+    let words: ahash::AHashMap<String, u32> = vocabulary.into_iter().collect();
     let word_level = WordLevelBuilder::default()
         .vocab(words)
         .unk_token("[UNK]".to_string())
         .build()
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let mut tokenizer = Tokenizer::new(word_level);
-    tokenizer.with_pre_tokenizer(Whitespace);
+    tokenizer.with_pre_tokenizer(Some(Whitespace));
     tokenizer
         .save(path, false)
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;

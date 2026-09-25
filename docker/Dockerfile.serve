@@ -1,0 +1,30 @@
+# syntax=docker/dockerfile:1
+#
+# Container image for the `typed-lm-serve` binary.
+#
+# Build from the repository root:
+#   docker build -f docker/Dockerfile.serve -t typed-lm-serve:local .
+#
+# CPU is the default accelerator. Pass --build-arg FEATURES=cuda to build a
+# CUDA image (then run it with `--gpus all` and an NVIDIA container runtime),
+# or FEATURES=metal on an Apple Silicon host.
+
+FROM rust:1-bookworm AS builder
+ARG FEATURES=""
+WORKDIR /build
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential cmake pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+COPY . .
+# Drop the repository's host-specific tuning so the image stays portable.
+RUN rm -f .cargo/config.toml
+RUN cargo build --release -p typed-lm-serve ${FEATURES:+--features ${FEATURES}}
+
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /build/target/release/typed-lm-serve /usr/local/bin/typed-lm-serve
+# The server binds 0.0.0.0:8080 by default.
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/typed-lm-serve"]

@@ -48,6 +48,85 @@ cargo run -p typed-lm-serve -- --help
 cargo run -p typed-lm-trainer -- --help
 ```
 
+## Installation
+
+Every crate is published to [crates.io](https://crates.io/crates/typed-lm-serve),
+which makes the **CPU**, **CUDA** and **Apple GPU (Metal)** builds available from
+source. Prebuilt binaries and container images are produced by the release
+workflow for the variants that GitHub-hosted runners can build.
+
+### From crates.io
+
+| Variant | Install the server | Install the trainer | Requirements |
+|---|---|---|---|
+| **CPU** (default) | `cargo install typed-lm-serve` | `cargo install typed-lm-trainer` | A Rust toolchain only. Add `--features mkl` for Intel MKL BLAS on x86. |
+| **CUDA** | `cargo install typed-lm-serve --features cuda` | `cargo install typed-lm-trainer --features cuda` | The CUDA toolkit (`nvcc`) and an NVIDIA driver at run time. |
+| **Apple GPU (Metal)** | `cargo install typed-lm-serve --features metal` | `cargo install typed-lm-trainer --features metal` | macOS on Apple Silicon. Candle ships no MLX backend; `metal` is the Apple GPU path. |
+
+Add the shared library to another crate with:
+
+```bash
+cargo add typed-lm-common
+```
+
+### Prebuilt binaries
+
+Every release attaches ready-to-run archives to the
+[GitHub Releases](https://github.com/neurono-ml/typed-lm/releases) page:
+
+| Archive | Accelerator |
+|---|---|
+| `typed-lm-<version>-linux-x86_64-cpu.tar.gz` | Linux x86_64, CPU |
+| `typed-lm-<version>-linux-x86_64-cuda.tar.gz` | Linux x86_64, CUDA (best effort) |
+| `typed-lm-<version>-macos-aarch64-metal.tar.gz` | macOS Apple Silicon, Metal |
+
+Each archive contains the `typed-lm-serve` and `typed-lm-trainer` binaries plus
+the `README.md` and `LICENSE`, and is accompanied by a `.sha256` checksum.
+
+```bash
+# Example: Linux CPU.
+version=0.1.0
+curl -LO "https://github.com/neurono-ml/typed-lm/releases/download/${version}/typed-lm-${version}-linux-x86_64-cpu.tar.gz"
+tar -xzf "typed-lm-${version}-linux-x86_64-cpu.tar.gz"
+./typed-lm-${version}-linux-x86_64-cpu/typed-lm-serve --help
+```
+
+### Container images
+
+CPU images for both binaries are published to the GitHub Container Registry on
+every release:
+
+```bash
+docker pull ghcr.io/neurono-ml/typed-lm-serve:latest
+docker pull ghcr.io/neurono-ml/typed-lm-trainer:latest
+
+# Tagged to the workspace version as well.
+docker pull ghcr.io/neurono-ml/typed-lm-serve:0.1.0
+```
+
+### Run locally
+
+```bash
+# Server, CPU build (downloads the default model on first startup).
+typed-lm-serve
+
+# The server picks the accelerator automatically (CUDA > Metal > CPU) based on
+# the features it was compiled with; `--model-dtype auto` keeps F32 on the CPU
+# and selects F16 on CUDA/Metal.
+typed-lm-serve --model-dtype auto
+
+# Trainer (LoRA/QLoRA/full/from-scratch and FP8/FP4 quantization).
+typed-lm-trainer train --device auto --help
+typed-lm-trainer quantize --help
+
+# From a container image.
+docker run --rm -p 8080:8080 ghcr.io/neurono-ml/typed-lm-serve:latest
+```
+
+The server resolves its execution device from the compiled features at startup;
+the trainer accepts an explicit `--device auto|cpu|cuda`. See
+[`docs/running.md`](docs/running.md) for the full flag reference.
+
 ## Quickstart
 
 ```bash

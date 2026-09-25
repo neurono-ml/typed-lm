@@ -40,21 +40,28 @@ const TINY_MODEL_REPOSITORY: &str = "hf-internal-testing/tiny-random-LlamaForCau
 /// Returns the snapshot directory holding `config.json`, `tokenizer.json` and
 /// `model.safetensors`.
 fn download_tiny_checkpoint() -> anyhow::Result<std::path::PathBuf> {
-    use hf_hub::api::sync::Api;
-    let api = Api::new().map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    let repository = api.model(TINY_MODEL_REPOSITORY.to_string());
+    use hf_hub::{split_id, HFClientSync};
+    let client = HFClientSync::new().map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let (owner, name) = split_id(TINY_MODEL_REPOSITORY);
+    let repository = client.model(owner, name);
     let configuration = repository
-        .get("config.json")
+        .download_file()
+        .filename("config.json")
+        .send()
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let snapshot = configuration
         .parent()
         .ok_or_else(|| anyhow::anyhow!("downloaded config has no parent directory"))?
         .to_path_buf();
     repository
-        .get("tokenizer.json")
+        .download_file()
+        .filename("tokenizer.json")
+        .send()
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     repository
-        .get("model.safetensors")
+        .download_file()
+        .filename("model.safetensors")
+        .send()
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     Ok(snapshot)
 }

@@ -539,11 +539,11 @@ mod tests {
 
     #[test]
     fn single_token_resolution_accepts_only_single_token_candidates() -> anyhow::Result<()> {
-        use std::collections::HashMap;
+        use ahash::AHashMap;
         use tokenizers::models::wordlevel::WordLevelBuilder;
         use tokenizers::pre_tokenizers::whitespace::Whitespace;
 
-        let vocab: HashMap<String, u32> = [
+        let vocab: AHashMap<String, u32> = [
             ("A".to_string(), 0),
             ("B".to_string(), 1),
             ("[UNK]".to_string(), 2),
@@ -556,7 +556,7 @@ mod tests {
             .build()
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         let mut tokenizer = Tokenizer::new(word_level);
-        tokenizer.with_pre_tokenizer(Whitespace);
+        tokenizer.with_pre_tokenizer(Some(Whitespace));
 
         assert_eq!(
             resolve_single_token_id(&tokenizer, &["A".to_string()]),

@@ -2,13 +2,21 @@
 name = "typed-lm-serve"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Jev-compatible, single-forward-pass semantic routing server for dense decoder models, built on Candle."
+readme = "README.md"
+keywords = ["llm", "inference", "actix-web", "candle", "server"]
+categories = ["web-programming::http-server", "machine-learning", "science"]
 
 [[bin]]
 name = "typed-lm-serve"
 path = "src/main.rs"
 
 [dependencies]
-typed-lm-common = { path = "../typed-lm-common" }
+typed-lm-common = { path = "../typed-lm-common", version = "0.1.0" }
 anyhow.workspace = true
 candle-core.workspace = true
 candle-nn.workspace = true
@@ -44,3 +52,4 @@ mkl = ["candle-transformers/mkl"]
 
 [dev-dependencies]
 tempfile.workspace = true
+ahash.workspace = true

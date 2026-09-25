@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 
+use ahash::AHashMap;
 use candle_core::{Device, Tensor};
 use tokenizers::models::wordlevel::WordLevelBuilder;
 use tokenizers::pre_tokenizers::whitespace::Whitespace;
@@ -138,7 +139,7 @@ pub fn write_tokenizer(path: &std::path::Path) -> anyhow::Result<()> {
         ("technical", 17),
         ("[UNK]", 18),
     ];
-    let words: HashMap<String, u32> = vocabulary
+    let words: AHashMap<String, u32> = vocabulary
         .iter()
         .map(|(token, identifier)| (token.to_string(), *identifier))
         .collect();
@@ -148,7 +149,7 @@ pub fn write_tokenizer(path: &std::path::Path) -> anyhow::Result<()> {
         .build()
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let mut tokenizer = Tokenizer::new(word_level);
-    tokenizer.with_pre_tokenizer(Whitespace);
+    tokenizer.with_pre_tokenizer(Some(Whitespace));
     tokenizer
         .save(path, false)
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;

@@ -184,14 +184,14 @@ pub fn build_batches(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use ahash::AHashMap;
     use tokenizers::models::wordlevel::WordLevelBuilder;
     use tokenizers::pre_tokenizers::whitespace::Whitespace;
     use typed_lm_common::contract::Content;
     use typed_lm_common::labels::label_sequence;
 
     fn word_level_tokenizer(vocabulary: &[(&str, u32)]) -> anyhow::Result<Tokenizer> {
-        let words: HashMap<String, u32> = vocabulary
+        let words: AHashMap<String, u32> = vocabulary
             .iter()
             .map(|(token, identifier)| (token.to_string(), *identifier))
             .collect();
@@ -201,7 +201,7 @@ mod tests {
             .build()
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         let mut tokenizer = Tokenizer::new(word_level);
-        tokenizer.with_pre_tokenizer(Whitespace);
+        tokenizer.with_pre_tokenizer(Some(Whitespace));
         Ok(tokenizer)
     }
 

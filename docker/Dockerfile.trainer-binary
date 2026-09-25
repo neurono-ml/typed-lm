@@ -1,0 +1,12 @@
+# syntax=docker/dockerfile:1
+#
+# Thin runtime image around a prebuilt `typed-lm-trainer` binary. Used by the
+# release workflow, which downloads the binary built on the runner into ./dist.
+# For a from-source build use docker/Dockerfile.trainer instead.
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY dist/typed-lm-trainer /usr/local/bin/typed-lm-trainer
+ENTRYPOINT ["/usr/local/bin/typed-lm-trainer"]

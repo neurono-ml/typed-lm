@@ -1,6 +1,7 @@
-use opentelemetry::{trace::TracerProvider as _, KeyValue};
+use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::{runtime, trace::TracerProvider};
+use opentelemetry_sdk::trace::{BatchSpanProcessor, SdkTracerProvider};
+use opentelemetry_sdk::Resource;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Default OTLP/gRPC endpoint pointing at the Jaeger companion service
@@ -24,7 +25,7 @@ pub fn otlp_endpoint() -> String {
 /// Dropping the guard shuts the provider down so buffered spans are flushed
 /// to Jaeger instead of being lost on exit.
 pub struct TelemetryGuard {
-    tracer_provider: TracerProvider,
+    tracer_provider: SdkTracerProvider,
 }
 
 impl Drop for TelemetryGuard {
@@ -47,15 +48,14 @@ pub fn initialize_telemetry(service_name: &str) -> anyhow::Result<TelemetryGuard
         .with_endpoint(endpoint.clone())
         .with_timeout(std::time::Duration::from_secs(5))
         .build()?;
-    let span_processor =
-        opentelemetry_sdk::trace::BatchSpanProcessor::builder(span_exporter, runtime::Tokio)
-            .build();
-    let tracer_provider = TracerProvider::builder()
+    let span_processor = BatchSpanProcessor::builder(span_exporter).build();
+    let tracer_provider = SdkTracerProvider::builder()
         .with_span_processor(span_processor)
-        .with_resource(opentelemetry_sdk::Resource::new(vec![KeyValue::new(
-            "service.name",
-            service_name.to_string(),
-        )]))
+        .with_resource(
+            Resource::builder()
+                .with_service_name(service_name.to_string())
+                .build(),
+        )
         .build();
     let tracer = tracer_provider.tracer(service_name.to_string());
     let opentelemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);

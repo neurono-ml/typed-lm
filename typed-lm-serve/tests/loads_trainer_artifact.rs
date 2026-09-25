@@ -20,7 +20,7 @@ use typed_lm_common::quantization::{
 
 /// Writes a minimal valid tokenizer so the resolver accepts the directory.
 fn write_tokenizer(path: &Path) -> anyhow::Result<()> {
-    use std::collections::HashMap as TokenMap;
+    use ahash::AHashMap as TokenMap;
     use tokenizers::models::wordlevel::WordLevelBuilder;
     use tokenizers::pre_tokenizers::whitespace::Whitespace;
     use tokenizers::Tokenizer;
@@ -34,7 +34,7 @@ fn write_tokenizer(path: &Path) -> anyhow::Result<()> {
         .build()
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let mut tokenizer = Tokenizer::new(word_level);
-    tokenizer.with_pre_tokenizer(Whitespace);
+    tokenizer.with_pre_tokenizer(Some(Whitespace));
     tokenizer
         .save(path, false)
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;

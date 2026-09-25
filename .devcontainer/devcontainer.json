@@ -58,6 +58,6 @@
   // copies it system-wide into /usr/local/bin (passwordless sudo in this
   // image), verifies it, then prefetches the Rust dependencies. The chown
   // first hands the cache volumes (root-owned on first mount) to vscode.
-  "postCreateCommand": "sudo chown -R \"$(id -u):$(id -g)\" /usr/local/cargo/registry /workspaces/typed-lm/target /home/vscode/.cache; sudo ln -sf /usr/local/cuda/bin/nvcc /usr/local/bin/nvcc; printf 'export CUDA_HOME=/usr/local/cuda\\nexport PATH=/usr/local/cuda/bin:$PATH\\n' | sudo tee /etc/profile.d/nvidia-cuda.sh >/dev/null; sudo chmod 644 /etc/profile.d/nvidia-cuda.sh; curl -fsSL https://opencode.ai/install -o /tmp/opencode-install.sh && bash /tmp/opencode-install.sh -s -- --no-modify-path; sudo install -m 755 \"$HOME/.opencode/bin/opencode\" /usr/local/bin/opencode && /usr/local/bin/opencode --version && cargo fetch",
+  "postCreateCommand": "sudo chown -R \"$(id -u):$(id -g)\" /usr/local/cargo/registry /workspaces/typed-lm/target /home/vscode/.cache; sudo ln -sf /usr/local/cuda/bin/nvcc /usr/local/bin/nvcc; printf 'export CUDA_HOME=/usr/local/cuda\\nexport PATH=/usr/local/cuda/bin:$PATH\\n' | sudo tee /etc/profile.d/nvidia-cuda.sh >/dev/null; sudo chmod 644 /etc/profile.d/nvidia-cuda.sh; curl -fsSL https://opencode.ai/v2/install -o /tmp/opencode-install.sh && bash /tmp/opencode-install.sh -s -- --no-modify-path; sudo install -m 755 \"$HOME/.opencode/bin/opencode\" /usr/local/bin/opencode && /usr/local/bin/opencode --version && cargo fetch",
   "remoteUser": "vscode"
 }

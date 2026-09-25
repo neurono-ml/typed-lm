@@ -2,6 +2,14 @@
 name = "typed-lm-common"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Shared Jev contract, labels, prompt rendering, checkpoint detection, device/dtype policy and FP8/FP4 quantization for typed-lm."
+readme = "README.md"
+keywords = ["llm", "candle", "inference", "quantization", "mlops"]
+categories = ["machine-learning", "science", "text-processing"]
 
 [dependencies]
 anyhow.workspace = true
@@ -23,6 +31,7 @@ opentelemetry_sdk.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+ahash.workspace = true
 
 [features]
 default = []
