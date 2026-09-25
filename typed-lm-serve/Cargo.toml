@@ -16,7 +16,7 @@ name = "typed-lm-serve"
 path = "src/main.rs"
 
 [dependencies]
-typed-lm-common = { path = "../typed-lm-common", version = "0.1.0" }
+typed-lm-common = { path = "../typed-lm-common", version = "0.1.1" }
 anyhow.workspace = true
 candle-core.workspace = true
 candle-nn.workspace = true

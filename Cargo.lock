@@ -5153,7 +5153,7 @@ checksum = "5283634e518fe9e82c7b20520bb4bc209009fd16c82077c802f8111ecbb0117a"
 
 [[package]]
 name = "typed-lm-common"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ahash",
  "anyhow",
@@ -5177,7 +5177,7 @@ dependencies = [
 
 [[package]]
 name = "typed-lm-serve"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "actix-web",
  "ahash",
@@ -5206,7 +5206,7 @@ dependencies = [
 
 [[package]]
 name = "typed-lm-trainer"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ahash",
  "anyhow",
