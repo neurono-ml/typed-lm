@@ -237,11 +237,12 @@ The fastest path — no toolchain, just an image. The server image pulls the mod
 on first startup and listens on `8080`:
 
 ```bash
-# Server. Mount a context file if you have one.
+# Server. Pass an HF_TOKEN for gated models and mount a context file if you have one.
 docker run --rm -p 8080:8080 \
+  -e HF_TOKEN=<hugging-face-token> \
   -v "$PWD/resources/memory.md:/etc/typed-lm/memory.md:ro" \
   -e CONTEXT_PATH=/etc/typed-lm/memory.md \
-  ghcr.io/neurono-ml/typed-lm-serve:latest
+  ghcr.io/neurono-ml/typed-lm-serve:0.1.1
 
 # Ask three typed questions in one call.
 curl -s http://127.0.0.1:8080/v1/systemone \
@@ -255,6 +256,7 @@ outputs survive the container:
 ```bash
 # Train a LoRA adapter; /work holds the checkpoint, dataset and outputs.
 docker run --rm -v "$PWD:/work" -w /work \
+  -e HF_TOKEN=<hugging-face-token> \
   ghcr.io/neurono-ml/typed-lm-trainer:0.1.1 train \
   --model-id /work/checkpoint \
   --dataset /work/resources/dataset.jsonl \
@@ -404,13 +406,16 @@ docker pull ghcr.io/neurono-ml/typed-lm-serve:0.1.1
 | `ghcr.io/neurono-ml/typed-lm-serve` | The Jev-compatible HTTP server |
 | `ghcr.io/neurono-ml/typed-lm-trainer` | `train` and `quantize` |
 
-The server listens on `8080`; mount a context file and the model cache:
+The server listens on `8080`; pass an `HF_TOKEN` for gated models, and mount a
+context file and the model cache:
 
 ```bash
 docker run --rm -p 8080:8080 \
+  -e HF_TOKEN=<hugging-face-token> \
+  -v typed-lm-cache:/root/.cache/huggingface \
   -v "$PWD/resources/memory.md:/etc/typed-lm/memory.md:ro" \
   -e CONTEXT_PATH=/etc/typed-lm/memory.md \
-  ghcr.io/neurono-ml/typed-lm-serve:latest
+  ghcr.io/neurono-ml/typed-lm-serve:0.1.1
 ```
 
 Build a GPU image from source with `--build-arg FEATURES=cuda` and run it with
@@ -418,7 +423,9 @@ Build a GPU image from source with `--build-arg FEATURES=cuda` and run it with
 
 ```bash
 docker build -f docker/Dockerfile.serve --build-arg FEATURES=cuda -t typed-lm-serve:cuda .
-docker run --rm --gpus all -p 8080:8080 typed-lm-serve:cuda
+docker run --rm --gpus all -p 8080:8080 \
+  -e HF_TOKEN=<hugging-face-token> \
+  typed-lm-serve:cuda
 ```
 
 ### Prebuilt binaries
