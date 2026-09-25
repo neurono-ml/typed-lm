@@ -1,239 +1,114 @@
+<div align="center">
+
 # typed-lm
 
-Rust monorepo for **deterministic inference** and **adapter training** of dense
-decoder models. Instead of autoregressive
-text generation, the server classifies answers in a **single forward pass**:
-each question is answered from the logits of a local model run with
-[Candle](https://github.com/huggingface/candle). The supported families are
-**Llama, Qwen2, Qwen3, Mistral, Gemma, Gemma2 and Gemma3**, detected
-automatically from the `model_type` field in `config.json`
-(see [Supported architectures](docs/running.md#supported-architectures)).
-Mixture-of-Experts and multi-head-latent-attention families (for example
-`mixtral`, `qwen3_moe`, `deepseek_v2`/`deepseek_v3`) are **not supported** and
-are rejected at load time. The trainer produces LoRA/QLoRA adapters and
-quantized artifacts (FP8/FP4) that the server consumes directly.
+**Structured decisions in a single forward pass.**
 
-The HTTP API is compatible with the **Jev (TypeSafe AI)** format: the client
-sends `state` (case facts) and `questions` (`noul`/`choice`/`score` with
-instructions and criteria) and receives typed answers — no free text.
+Turn dense decoder models — Llama, Qwen2, Qwen3, Mistral, Gemma, Gemma2 and
+Gemma3 — into a typed semantic-routing API. Send a *state* and typed *questions*;
+receive booleans, choices and scores your code can branch on. No text generation,
+no parsing.
 
-## Documentation
+[![Docs](https://img.shields.io/badge/docs-neurono--ml.github.io-6d28d9?logo=readthedocs&logoColor=white)](https://neurono-ml.github.io/typed-lm/)
+[![CI](https://github.com/neurono-ml/typed-lm/actions/workflows/ci.yml/badge.svg)](https://github.com/neurono-ml/typed-lm/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/typed-lm-serve?logo=rust&color=6d28d9)](https://crates.io/crates/typed-lm-serve)
+[![docs.rs](https://img.shields.io/docsrs/typed-lm-serve?logo=docs.rs)](https://docs.rs/typed-lm-serve)
+[![Downloads](https://img.shields.io/crates/d/typed-lm-serve?color=3b82f6)](https://crates.io/crates/typed-lm-serve)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
+[![Rust](https://img.shields.io/badge/rust-2021-orange?logo=rust)](https://www.rust-lang.org/)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-10b981)](https://github.com/neurono-ml/typed-lm/blob/main/AGENTS.md)
 
-| Guide | Contents |
-|---|---|
-| [`docs/running.md`](docs/running.md) | Build and run the server: CPU/GPU, flags, layouts, session cache. |
-| [`docs/api.md`](docs/api.md) | Jev contract, routes, response shapes and `curl` examples. |
-| [`docs/training.md`](docs/training.md) | Dataset format, LoRA/QLoRA training, FP8/FP4 quantization. |
+[Quick start](https://neurono-ml.github.io/typed-lm/quickstart.html) ·
+[API](https://neurono-ml.github.io/typed-lm/guides/api.html) ·
+[Training](https://neurono-ml.github.io/typed-lm/training/index.html) ·
+[Architectures](https://neurono-ml.github.io/typed-lm/reference/architectures.html)
 
-Additional references:
+</div>
 
-- [`typed-lm-trainer/README.md`](typed-lm-trainer/README.md) — trainer
-  subcommands, flags and PTQ details.
-- [`examples/README.md`](examples/README.md) — request examples and `curl` calls.
-- [`example.http`](example.http) — the same requests as an HTTP file
-  (VS Code REST Client).
-- [`AGENTS.md`](AGENTS.md) — project rules for contributors and agents.
+---
 
-## Workspace
+## The idea
 
-| Crate | Role | Type |
-|---|---|---|
-| `typed-lm-common` | Jev contract, labels, prompt rendering, checkpoint detection, device/dtype, quantization | lib |
-| `typed-lm-serve` | Jev-compatible Actix server (binary, no subcommand) | bin |
-| `typed-lm-trainer` | LoRA/QLoRA fine-tuning and post-training quantization (subcommands `train`/`quantize`) | bin + lib |
+A large language model answers by generating text token by token. When your
+software needs a judgment it can branch on, that creates a mismatch: you prompt,
+you parse, you validate — and you still get a string. **typed-lm** removes the
+mismatch. It runs the model **once**, reads the logits at a single **decision
+position**, and returns a typed value with a calibrated distribution.
 
-```bash
-cargo build --workspace
-cargo run -p typed-lm-serve -- --help
-cargo run -p typed-lm-trainer -- --help
+```mermaid
+flowchart LR
+  client["Client"]:::neutral
+  request["state + questions"]:::primary
+
+  subgraph model["typed-lm-serve"]
+    direction TB
+    prefill["shared prefill"]:::accent
+    batch["batched decision positions"]:::accent
+  end
+
+  answers["typed answers<br/>noul · choice · score"]:::success
+  code["your code<br/>branch · sort · route"]:::success
+
+  client --> request --> prefill --> batch --> answers --> code
+
+  classDef primary fill:#ede9fe,stroke:#7c3aed,color:#3b0764,stroke-width:1.5px
+  classDef accent fill:#dbeafe,stroke:#2563eb,color:#0c4a6e,stroke-width:1.5px
+  classDef success fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:1.5px
+  classDef neutral fill:#f4f4f5,stroke:#a1a1aa,color:#18181b,stroke-width:1.5px
 ```
 
-## Installation
+### Why it works
 
-Every crate is published to [crates.io](https://crates.io/crates/typed-lm-serve),
-which makes the **CPU**, **CUDA** and **Apple GPU (Metal)** builds available from
-source. Prebuilt binaries and container images are produced by the release
-workflow for the variants that GitHub-hosted runners can build.
+<table>
+<tr>
+<td width="50%" valign="top">
 
-### From crates.io
+**⚡ One forward pass per request**
 
-| Variant | Install the server | Install the trainer | Requirements |
+All questions share a prefill and are evaluated in one batched pass. Adding
+questions barely changes latency.
+
+**🎯 Calibrated by training**
+
+LoRA, QLoRA and full training optimize the exact decision-position loss the
+server reads at inference.
+
+</td>
+<td width="50%" valign="top">
+
+**🧩 Jev-compatible**
+
+Drop-in compatible with the Jev (TypeSafe AI) contract: `noul`, `choice` and
+`score`, combinable in one call.
+
+**📦 Servable artifacts**
+
+FP8/FP4 quantization and full/from-scratch checkpoints are served directly by
+the same binary.
+
+</td>
+</tr>
+</table>
+
+## Performance
+
+One forward pass means **milliseconds, not seconds**. On a single RTX 3070 with
+F16 weights, a full request — the shared prefill plus five batched question
+suffixes — is answered in tens to hundreds of milliseconds.
+
+**GPU** (release, Qwen2.5-1.5B, `F16`, RTX 3070):
+
+| Prefix | prefill | 5 batched suffixes | single next token |
 |---|---|---|---|
-| **CPU** (default) | `cargo install typed-lm-serve` | `cargo install typed-lm-trainer` | A Rust toolchain only. Add `--features mkl` for Intel MKL BLAS on x86. |
-| **CUDA** | `cargo install typed-lm-serve --features cuda` | `cargo install typed-lm-trainer --features cuda` | The CUDA toolkit (`nvcc`) and an NVIDIA driver at run time. |
-| **Apple GPU (Metal)** | `cargo install typed-lm-serve --features metal` | `cargo install typed-lm-trainer --features metal` | macOS on Apple Silicon. Candle ships no MLX backend; `metal` is the Apple GPU path. |
+| 64 | **14 ms** | **36 ms** | **52 ms** |
+| 256 | **31 ms** | **81 ms** | **65 ms** |
+| 1024 | **154 ms** | **379 ms** | **64 ms** |
 
-Add the shared library to another crate with:
+Adding a question adds a suffix to the same batched pass, not a new request, so
+latency grows with the prefix length — not with the number of questions.
 
-```bash
-cargo add typed-lm-common
-```
-
-### Prebuilt binaries
-
-Every release attaches ready-to-run archives to the
-[GitHub Releases](https://github.com/neurono-ml/typed-lm/releases) page:
-
-| Archive | Accelerator |
-|---|---|
-| `typed-lm-<version>-linux-x86_64-cpu.tar.gz` | Linux x86_64, CPU |
-| `typed-lm-<version>-linux-x86_64-cuda.tar.gz` | Linux x86_64, CUDA (best effort) |
-| `typed-lm-<version>-macos-aarch64-metal.tar.gz` | macOS Apple Silicon, Metal |
-
-Each archive contains the `typed-lm-serve` and `typed-lm-trainer` binaries plus
-the `README.md` and `LICENSE`, and is accompanied by a `.sha256` checksum.
-
-```bash
-# Example: Linux CPU.
-version=0.1.0
-curl -LO "https://github.com/neurono-ml/typed-lm/releases/download/${version}/typed-lm-${version}-linux-x86_64-cpu.tar.gz"
-tar -xzf "typed-lm-${version}-linux-x86_64-cpu.tar.gz"
-./typed-lm-${version}-linux-x86_64-cpu/typed-lm-serve --help
-```
-
-### Container images
-
-CPU images for both binaries are published to the GitHub Container Registry on
-every release:
-
-```bash
-docker pull ghcr.io/neurono-ml/typed-lm-serve:latest
-docker pull ghcr.io/neurono-ml/typed-lm-trainer:latest
-
-# Tagged to the workspace version as well.
-docker pull ghcr.io/neurono-ml/typed-lm-serve:0.1.0
-```
-
-### Run locally
-
-```bash
-# Server, CPU build (downloads the default model on first startup).
-typed-lm-serve
-
-# The server picks the accelerator automatically (CUDA > Metal > CPU) based on
-# the features it was compiled with; `--model-dtype auto` keeps F32 on the CPU
-# and selects F16 on CUDA/Metal.
-typed-lm-serve --model-dtype auto
-
-# Trainer (LoRA/QLoRA/full/from-scratch and FP8/FP4 quantization).
-typed-lm-trainer train --device auto --help
-typed-lm-trainer quantize --help
-
-# From a container image.
-docker run --rm -p 8080:8080 ghcr.io/neurono-ml/typed-lm-serve:latest
-```
-
-The server resolves its execution device from the compiled features at startup;
-the trainer accepts an explicit `--device auto|cpu|cuda`. See
-[`docs/running.md`](docs/running.md) for the full flag reference.
-
-## Quickstart
-
-```bash
-# Server (downloads the default model on first startup).
-cargo run -p typed-lm-serve
-
-# A typed request.
-curl -s http://127.0.0.1:8080/v1/systemone \
-  -H 'Content-Type: application/json' \
-  -d @examples/request_mixed.json
-
-# Train a LoRA adapter, then quantize it to FP8.
-cargo run -p typed-lm-trainer -- train \
-  --model-id /path/to/local/checkpoint \
-  --dataset resources/dataset.jsonl \
-  --output-directory output/train --method lora \
-  --epochs 3 --batch-size 4 --learning-rate 1e-4
-
-cargo run -p typed-lm-trainer -- quantize \
-  --model-id /path/to/local/checkpoint \
-  --adapter-directory output/train \
-  --quantization fp8 --output-directory output/quantized
-```
-
-See [`docs/running.md`](docs/running.md) for server details,
-[`docs/api.md`](docs/api.md) for the full contract and
-[`docs/training.md`](docs/training.md) for the training/quantization pipeline.
-
-## Routes
-
-`POST /v1/systemone`, `GET /v1/models`, `GET /health`, `GET /health/live`.
-The request accepts `noul` (boolean decision), `choice` (best option from a
-restricted set) and `score` (continuous value over levels) questions, combinable
-in one call. Invalid bodies return `422`, unknown models `404` and inference
-failures `500`, all with the `{"error": {"message": "..."}}` envelope. The
-complete shapes are in [`docs/api.md`](docs/api.md).
-
-## Acceleration
-
-- **CPU** — GGUF `Q4_K_M` (roughly half the per-request cost of dense `F32`) plus
-  the `mkl` feature and the fused CPU flash attention.
-- **GPU** — `--features cuda` selects F16 weights via `--model-dtype auto`.
-- **Training** — `PrecisionPolicy { master: F32, compute: F32(CPU)/BF16(GPU),
-  reduction: F32 }` keeps master weights and optimizer state in F32 on every
-  device; parity is functional, not of speed.
-
-Measured latency tables and the devcontainer/CUDA setup are in
-[`docs/running.md`](docs/running.md) and the original benchmark notes further
-below.
-
-## Tests
-
-```bash
-cargo test --workspace                       # unit + integration, no download
-cargo test --workspace -- --ignored --nocapture   # live tests (real weights)
-cargo clippy --workspace --all-targets
-cargo fmt --check
-```
-
-- `cargo test --workspace` covers probability calibration, labels, prompt
-  rendering, session-cache eviction, CPU flash attention vs a matmul/softmax
-  reference, FP8/FP4 quantization, dataset/collate, LoRA and the training loop
-  (dummies), API integration with a `MockEvaluator`, and a **binary-level E2E**
-  (`typed-lm-serve/tests/end_to_end.rs`: `train` → `quantize` → `serve` over
-  HTTP) with no weight download.
-- `cargo test --workspace -- --ignored` runs the **live** tests marked
-  `#[ignore]`: real-weight equivalence with upstream, session-cache gain,
-  latency benchmarks, FP8/FP4 artifact loading, and **GPU training/quantization**
-  (`typed-lm-trainer/tests/live_gpu_e2e.rs`). Do not run these in CI.
-- Do not pass `--all-features` on Linux (the Metal feature requires macOS).
-
-A reproducible CPU E2E script lives in `temporary/e2e/run_e2e_cpu.sh`.
-
-## Architecture
-
-- **HTTP (`typed-lm-serve/src/api/`)**: `actix-web` with `web::scope("/v1")`
-  (`POST /v1/systemone`, `GET /v1/models`) and `GET /health`, `GET /health/live`.
-  Handlers receive a `SharedState` (evaluator + model name + context name +
-  startup time) via `web::Data`.
-- **Shared contract (`typed-lm-common`)**: request DTOs, label arithmetic and
-  prompt rendering live in the common crate so server and trainer produce
-  byte-identical prompts and agree on the decision position.
-- **Scoring (Candle)**: `CandleEvaluator` prefills the fixed system context into
-  a KV-cache **once at startup**. Each request does a *single shared prefill* of
-  the tokens common to the questions, **broadcasts** the cache on the attention
-  batch dimension, and evaluates each question suffix in **a single batched
-  forward pass**. The state prefix (`system + state`) is retained in a bounded
-  LRU. It reads each label token's logit (`A`, `B`, …) at the last position and
-  calibrates the distribution (binary softmax for `noul`, temperature for
-  `choice`/`score`).
-- **Parallel forward (`typed-lm-serve/src/infrastructure/parallel_llama.rs`)**:
-  a vendored, broadcastable dense decoder implementation covering every
-  supported family (Llama, Qwen2, Qwen3, Mistral, Gemma, Gemma2, Gemma3),
-  validated against upstream by `#[ignore]` equivalence tests. GGUF-quantized
-  checkpoints use a Qwen2-only path
-  (`parallel_quantized_qwen2.rs`); any other family served from GGUF is
-  rejected with an actionable message.
-- **Training (`typed-lm-trainer/src/`)**: `dataset` (discovery/record/loader/
-  collate), `model` (precision/LoRA/differentiable forward/weight loading),
-  `training` (loss/optimizer/checkpoint/loop) and `quantization` (export).
-- **Context (`ContextProvider`)**: currently `FileContextProvider` (for example
-  `--context-path resources/memory.md`); the interface allows swapping the source
-  for retrieval (RAG) later without changing handlers, evaluator or API.
-
-## CPU benchmark notes
-
-`reports_latency_breakdown` (release, Qwen2.5-1.5B dense, `F32`):
+<details>
+<summary><strong>CPU numbers</strong> (release, dense <code>F32</code>)</summary>
 
 | Prefix | Stage | Baseline | + CPU flash | + MKL |
 |---|---|---|---|---|
@@ -243,16 +118,298 @@ A reproducible CPU E2E script lives in `temporary/e2e/run_e2e_cpu.sh`.
 | 64 | 5 batched suffixes | 1.44 s | 1.33 s | **0.25 s** |
 | 256 | 5 batched suffixes | 2.47 s | 1.98 s | **0.35 s** |
 | 1024 | 5 batched suffixes | 4.74 s | 4.59 s | **2.57 s** |
-| 64 | single next token | 655 ms | 699 ms | **159 ms** |
-| 256 | single next token | 811 ms | 347 ms | **175 ms** |
-| 1024 | single next token | 815 ms | 545 ms | **300 ms** |
 
-## GPU benchmark notes
+The recommended CPU mode is a GGUF `Q4_K_M` checkpoint with the `mkl` feature.
 
-`reports_latency_breakdown` (release, Qwen2.5-1.5B, `F16`, RTX 3070):
+</details>
 
-| Prefix | prefill | 5 batched suffixes | single next token |
+The session prefix cache skips the prefill entirely for repeated states. More in
+[benchmarks](https://neurono-ml.github.io/typed-lm/engineering/benchmarks.html).
+
+## The three primitives
+
+| Question | Goal | Returns |
+|---|---|---|
+| **Noul** | Is this statement true? | `noul` (0.0 to 1.0) |
+| **Choice** | Pick one option from a closed set | `choice`, `probabilities`, `confidence` |
+| **Score** | Rate the state on ordered levels | `score`, `legend`, `probabilities`, `confidence` |
+
+All three can be combined in a single request, and each question is evaluated
+independently against the same state.
+
+```mermaid
+flowchart LR
+  state["state"]:::neutral
+  noul["noul question"]:::primary
+  choice["choice question"]:::accent
+  score["score question"]:::success
+  answers["answers map"]:::success
+
+  state --> noul --> answers
+  state --> choice --> answers
+  state --> score --> answers
+
+  classDef primary fill:#ede9fe,stroke:#7c3aed,color:#3b0764,stroke-width:1.5px
+  classDef accent fill:#dbeafe,stroke:#2563eb,color:#0c4a6e,stroke-width:1.5px
+  classDef success fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:1.5px
+  classDef neutral fill:#f4f4f5,stroke:#a1a1aa,color:#18181b,stroke-width:1.5px
+```
+
+## Quickstart
+
+```bash
+# Install (CPU build; add --features cuda or --features metal for a GPU).
+cargo install typed-lm-serve typed-lm-trainer
+
+# Start the server (downloads the default model on first startup).
+typed-lm-serve --context-path resources/memory.md
+
+# Ask three typed questions in one call.
+curl -s http://127.0.0.1:8080/v1/systemone \
+  -H 'Content-Type: application/json' \
+  -d @examples/request_mixed.json
+```
+
+**Request**
+
+```json
+{
+  "model": "typed-lm",
+  "state": "Order #7710 arrived with a smashed box and a cracked vase inside. Delivery was 3 days ago and the customer asks what to do next.",
+  "questions": {
+    "refund_eligible": {
+      "type": "noul",
+      "instructions": "The customer is eligible for a full refund under the store policy."
+    },
+    "responsible_department": {
+      "type": "choice",
+      "instructions": "Which department should handle this case?",
+      "criteria": {
+        "billing": "Double charges and payment errors",
+        "logistics": "Damaged, lost, or late shipments",
+        "product_support": "Defective-item troubleshooting, replacements, and setup help"
+      }
+    },
+    "urgency": {
+      "type": "score",
+      "instructions": "How urgent is this case?",
+      "criteria": ["Routine", "Urgent", "Emergency"]
+    }
+  }
+}
+```
+
+**Response**
+
+```json
+{
+  "model": "typed-lm",
+  "answers": {
+    "refund_eligible": { "type": "noul", "noul": 0.87 },
+    "responsible_department": {
+      "type": "choice",
+      "choice": "logistics",
+      "probabilities": { "billing": 0.05, "logistics": 0.9, "product_support": 0.05 },
+      "confidence": 0.85
+    },
+    "urgency": {
+      "type": "score",
+      "score": 1.2,
+      "legend": { "0": "Routine", "1": "Urgent", "2": "Emergency" },
+      "probabilities": { "0": 0.2, "1": 0.4, "2": 0.4 },
+      "confidence": 0.2
+    }
+  },
+  "usage": { "input_tokens": 512, "output_tokens": 4 }
+}
+```
+
+> Full walkthrough: [quickstart](https://neurono-ml.github.io/typed-lm/quickstart.html).
+
+## Train on your own decisions
+
+The trainer optimizes the **cross-entropy at the decision position**, the exact
+position the server reads. A dataset is Jev-native: the serving contract plus an
+`answer`.
+
+```mermaid
+flowchart LR
+  dataset["dataset<br/>state + questions + answer"]:::neutral
+  checkpoint["base checkpoint"]:::accent
+  config["run configuration<br/>CLI or TOML"]:::warning
+  train["train<br/>lora · qlora · full · from-scratch"]:::primary
+  artifact["artifact<br/>adapter or checkpoint"]:::success
+  quantize["quantize<br/>fp8 · fp4"]:::accent
+  serve["typed-lm-serve"]:::success
+
+  dataset --> train
+  checkpoint --> train
+  config --> train
+  train --> artifact --> serve
+  artifact --> quantize --> serve
+
+  classDef primary fill:#ede9fe,stroke:#7c3aed,color:#3b0764,stroke-width:1.5px
+  classDef accent fill:#dbeafe,stroke:#2563eb,color:#0c4a6e,stroke-width:1.5px
+  classDef success fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:1.5px
+  classDef warning fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef neutral fill:#f4f4f5,stroke:#a1a1aa,color:#18181b,stroke-width:1.5px
+```
+
+```bash
+# Train a LoRA adapter over a frozen checkpoint.
+typed-lm-trainer train \
+  --model-id /path/to/local/checkpoint \
+  --dataset resources/dataset.jsonl \
+  --output-directory output/train \
+  --method lora --epochs 3 --batch-size 4 --learning-rate 1e-4
+
+# Merge the adapter and quantize to FP8.
+typed-lm-trainer quantize \
+  --model-id /path/to/local/checkpoint \
+  --adapter-directory output/train \
+  --quantization fp8 --output-directory output/quantized
+```
+
+| `--method` | Trainable parameters | Output |
+|---|---|---|
+| `lora` (default) | LoRA `A`/`B` over a frozen checkpoint | `adapter.safetensors` |
+| `qlora` | LoRA over a quantized base | `adapter.safetensors` |
+| `full` | Every parameter from a checkpoint | complete checkpoint |
+| `from-scratch` | Every parameter from random init | complete checkpoint |
+
+> Full tutorial: [training](https://neurono-ml.github.io/typed-lm/training/index.html).
+
+## Supported architectures
+
+Detected automatically from `model_type` in `config.json`.
+
+```mermaid
+flowchart TB
+  config["config.json model_type"]:::neutral
+  dense{"dense family?"}:::warning
+  family["llama · qwen2 · qwen3<br/>mistral · gemma · gemma2 · gemma3"]:::success
+  moe["mixtral · qwen3_moe<br/>deepseek_v2 · deepseek_v3"]:::danger
+  served["served"]:::success
+  rejected["rejected"]:::danger
+
+  config --> dense
+  dense -- "yes" --> family --> served
+  dense -- "no" --> moe --> rejected
+
+  classDef success fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:1.5px
+  classDef danger fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px
+  classDef warning fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef neutral fill:#f4f4f5,stroke:#a1a1aa,color:#18181b,stroke-width:1.5px
+```
+
+Dense safetensors, PyTorch (`.pth`/`.bin`) and NumPy (`.npz`) checkpoints of any
+of the seven families are served. **GGUF-quantized serving is Qwen2-only.**
+Mixture-of-Experts and multi-head-latent-attention families are rejected at load
+time. FP8 and FP4 artifacts are dequantized on load; `GPTQ`/`AWQ` are rejected.
+
+## Workspace
+
+| Crate | Role | Type |
+|---|---|---|
+| [`typed-lm-common`](typed-lm-common/README.md) | Jev contract, labels, prompt rendering, checkpoint detection, device/dtype, quantization | lib |
+| [`typed-lm-serve`](typed-lm-serve/README.md) | Jev-compatible Actix server (binary, no subcommand) | bin |
+| [`typed-lm-trainer`](typed-lm-trainer/README.md) | LoRA/QLoRA/full/from-scratch training and FP8/FP4 PTQ | bin + lib |
+
+```bash
+cargo build --workspace
+cargo run -p typed-lm-serve -- --help
+cargo run -p typed-lm-trainer -- --help
+```
+
+## Installation
+
+### From crates.io
+
+| Variant | Server | Trainer | Requirements |
 |---|---|---|---|
-| 64 | 14 ms | 36 ms | 52 ms |
-| 256 | 31 ms | 81 ms | 65 ms |
-| 1024 | 154 ms | 379 ms | 64 ms |
+| **CPU** (default) | `cargo install typed-lm-serve` | `cargo install typed-lm-trainer` | A Rust toolchain. Add `--features mkl` for Intel MKL BLAS on x86. |
+| **CUDA** | `--features cuda` | `--features cuda` | The CUDA toolkit (`nvcc`) and an NVIDIA driver. |
+| **Apple GPU (Metal)** | `--features metal` | `--features metal` | macOS on Apple Silicon. |
+
+### Prebuilt binaries and containers
+
+Each [release](https://github.com/neurono-ml/typed-lm/releases) attaches binaries
+for Linux x86_64 (CPU/CUDA) and macOS arm64 (Metal), plus container images:
+
+```bash
+docker pull ghcr.io/neurono-ml/typed-lm-serve:latest
+docker run --rm -p 8080:8080 ghcr.io/neurono-ml/typed-lm-serve:latest
+```
+
+<details>
+<summary><strong>Server flags (defaults)</strong></summary>
+
+| Flag | Env | Default |
+|---|---|---|
+| `--host` | `HOST` | `0.0.0.0` |
+| `--port` | `PORT` | `8080` |
+| `--model-id` | `MODEL_ID` | `Qwen/Qwen2.5-1.5B-Instruct` |
+| `--context-path` | `CONTEXT_PATH` | empty |
+| `--served-model-name` | `SERVED_MODEL_NAME` | `typed-lm` |
+| `--model-dtype` | `MODEL_DTYPE` | `auto` |
+| `--session-cache-entries` | `SESSION_CACHE_ENTRIES` | `16` |
+| `--session-cache-tokens` | `SESSION_CACHE_TOKENS` | `32768` |
+
+Full reference: [server flags](https://neurono-ml.github.io/typed-lm/reference/server-flags.html).
+
+</details>
+
+## Performance details
+
+Full CPU and GPU latency tables, the acceleration features and the session-cache
+gain are in [benchmarks](https://neurono-ml.github.io/typed-lm/engineering/benchmarks.html).
+
+## Routes
+
+`POST /v1/systemone`, `GET /v1/models`, `GET /health`, `GET /health/live`.
+Invalid bodies return `422`, unknown models `404`, inference failures `500`, all
+with the `{"error": {"message": "..."}}` envelope.
+
+## Testing
+
+```bash
+cargo test --workspace                            # unit + integration, no download
+cargo test --workspace -- --ignored --nocapture   # live tests (real weights)
+cargo clippy --workspace --all-targets
+cargo fmt --check
+```
+
+`cargo test --workspace` includes a weight-free **binary E2E**
+(`train` → `quantize` → `serve` over HTTP). Live tests marked `#[ignore]` need
+real weights and a GPU for the training cases; they never run in CI.
+
+## Documentation
+
+The complete guide is published at **<https://neurono-ml.github.io/typed-lm/>**:
+
+| Guide | Link |
+|---|---|
+| Quick start | <https://neurono-ml.github.io/typed-lm/quickstart.html> |
+| Calling the API | <https://neurono-ml.github.io/typed-lm/guides/api.html> |
+| Running the server | <https://neurono-ml.github.io/typed-lm/guides/running.html> |
+| Training tutorial | <https://neurono-ml.github.io/typed-lm/training/index.html> |
+| Configuration file (TOML) | <https://neurono-ml.github.io/typed-lm/reference/configuration-file.html> |
+| CLI cheat sheet | <https://neurono-ml.github.io/typed-lm/reference/cheatsheet.html> |
+
+For AI assistants, the site exposes an index at
+<https://neurono-ml.github.io/typed-lm/llms.txt>.
+
+## Contributing
+
+Contributions are welcome — code, docs, datasets and prompts alike. The project
+rules live in [`AGENTS.md`](AGENTS.md).
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+## License
+
+Apache-2.0. See [LICENSE](./LICENSE).
