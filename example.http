@@ -1,6 +1,6 @@
 @host = http://localhost:8080
 
-### Pergunta booleana simples (elegibilidade de reembolso de cobrança duplicada)
+### Simple boolean question (duplicate-charge refund eligibility)
 POST {{host}}/v1/systemone
 Content-Type: application/json
 
@@ -15,7 +15,7 @@ Content-Type: application/json
   }
 }
 
-### Booleano + roteamento + urgência (item danificado no transporte)
+### Boolean + routing + urgency (item damaged in transit)
 POST {{host}}/v1/systemone
 Content-Type: application/json
 
@@ -44,8 +44,8 @@ Content-Type: application/json
   }
 }
 
-### Perguntas complexas ancoradas na memória (purificador de ar de uso médico)
-# Exige o servidor com --context-path resources/memory.md
+### Complex questions anchored on memory (medical-use air purifier)
+# Requires the server started with --context-path resources/memory.md
 POST {{host}}/v1/systemone
 Content-Type: application/json
 
@@ -78,11 +78,11 @@ Content-Type: application/json
   }
 }
 
-### Lista os modelos servidos
+### List the served models
 GET {{host}}/v1/models
 
-### Saúde do serviço (inclui tempo de carga do modelo)
+### Service health (includes the model load time)
 GET {{host}}/health
 
-### Liveness (não depende do modelo)
+### Liveness (does not depend on the model)
 GET {{host}}/health/live

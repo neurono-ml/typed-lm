@@ -1,7 +1,7 @@
 # typed-lm
 
 Rust monorepo for **deterministic inference** and **adapter training** of dense
-decoder models, part of the **Sciencekit** ecosystem. Instead of autoregressive
+decoder models. Instead of autoregressive
 text generation, the server classifies answers in a **single forward pass**:
 each question is answered from the logits of a local model run with
 [Candle](https://github.com/huggingface/candle). The supported families are

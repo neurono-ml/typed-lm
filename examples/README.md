@@ -1,51 +1,51 @@
-# Exemplos de uso da API
+# API usage examples
 
-Exemplos de corpo de requisição para `POST /v1/systemone`.
-As respostas dependem dos fatos de `resources/memory.md`
-(loja fictícia GreenLeaf).
+Request-body examples for `POST /v1/systemone`.
+The answers depend on the facts in `resources/memory.md`
+(the fictional GreenLeaf store).
 
-## Subir o servidor
+## Starting the server
 
 ```bash
 cargo run -p typed-lm-serve
 ```
 
-O servidor sobe por padrão em `http://127.0.0.1:8080`
-sem contexto (`--context-path` ausente). Passe
-`--context-path resources/memory.md` (ou `CONTEXT_PATH`)
-para ancorar as respostas nos fatos de exemplo.
+The server starts by default at `http://127.0.0.1:8080`
+without a context (no `--context-path`). Pass
+`--context-path resources/memory.md` (or `CONTEXT_PATH`)
+to anchor the answers on the example facts.
 
-## Modelos com acesso restrito (gated)
+## Gated models (restricted access)
 
-O modelo padrão (`Qwen/Qwen2.5-1.5B-Instruct`) é público
-e não precisa de autenticação. Se você trocar para um modelo
-com acesso restrito via `--model-id` (por exemplo
-`recogna-nlp/bode-1b-instruct`), é preciso aceitar as condições
-de uso na página do modelo no Hugging Face e exportar um token
-com permissão de leitura antes de subir o servidor:
+The default model (`Qwen/Qwen2.5-1.5B-Instruct`) is public
+and requires no authentication. If you switch to a gated
+model via `--model-id` (for example
+`recogna-nlp/bode-1b-instruct`), you must accept the terms
+of use on the model page on Hugging Face and export a token
+with read permission before starting the server:
 
 ```bash
-HF_TOKEN=hf_seu_token_aqui cargo run -p typed-lm-serve -- --model-id recogna-nlp/bode-1b-instruct
+HF_TOKEN=hf_your_token_here cargo run -p typed-lm-serve -- --model-id recogna-nlp/bode-1b-instruct
 ```
 
-Sem o `HF_TOKEN`, o download dos pesos falha com erro `401`
-(`failed to download ... status code 401`) — esse é o
-comportamento esperado, não um bug.
+Without `HF_TOKEN`, the weight download fails with a `401`
+error (`failed to download ... status code 401`) — that is the
+expected behaviour, not a bug.
 
-## Variáveis de ambiente
+## Environment variables
 
-Toda opção do `typed-lm-serve` também pode vir de ambiente
-(flag CLI > env > default): `HOST`, `PORT`,
+Every `typed-lm-serve` option can also come from the environment
+(CLI flag > env > default): `HOST`, `PORT`,
 `MODEL_ID`, `CONTEXT_PATH`,
-`SERVED_MODEL_NAME` (e `HF_TOKEN` para `--hf-token`).
+`SERVED_MODEL_NAME` (and `HF_TOKEN` for `--hf-token`).
 
 ```bash
 PORT=9090 MODEL_ID=recogna-nlp/bode-1b-instruct cargo run -p typed-lm-serve
 ```
 
-## Pedidos `curl`
+## `curl` requests
 
-Booleano simples (elegibilidade de reembolso de cobrança duplicada):
+Simple boolean (duplicate-charge refund eligibility):
 
 ```bash
 curl -s http://127.0.0.1:8080/v1/systemone \
@@ -53,7 +53,7 @@ curl -s http://127.0.0.1:8080/v1/systemone \
   -d @examples/request_noul.json
 ```
 
-Booleano + roteamento + urgência (item danificado no transporte):
+Boolean + routing + urgency (item damaged in transit):
 
 ```bash
 curl -s http://127.0.0.1:8080/v1/systemone \
@@ -61,9 +61,9 @@ curl -s http://127.0.0.1:8080/v1/systemone \
   -d @examples/request_mixed.json
 ```
 
-Perguntas complexas ancoradas na memória (purificador de ar
-de uso médico com defeito: elegibilidade, departamento
-responsável, urgência e regra de vale-presente):
+Complex questions anchored on memory (defective medical-use
+air purifier: eligibility, responsible department, urgency
+and gift-card rule):
 
 ```bash
 curl -s http://127.0.0.1:8080/v1/systemone \
@@ -71,11 +71,11 @@ curl -s http://127.0.0.1:8080/v1/systemone \
   -d @examples/request_context.json
 ```
 
-## Teste live de integração (requer pesos reais)
+## Live integration test (requires real weights)
 
-O teste live carrega o modelo real e valida respostas ancoradas
-na memória. Ele é marcado com `#[ignore]` e **não** roda no CI.
-Para executá-lo (baixa os pesos uma vez para o cache local):
+The live test loads the real model and validates answers anchored
+on memory. It is marked `#[ignore]` and does **not** run in CI.
+To run it (downloads the weights once into the local cache):
 
 ```bash
 cargo test --workspace -- --ignored

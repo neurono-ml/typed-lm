@@ -1,64 +1,64 @@
 # typed-lm-trainer
 
-Fine-tuning **LoRA/QLoRA**, treino de parâmetros completos (**full** e
-**from-scratch**) e quantização pós-treino (**PTQ FP8/FP4**) para os modelos
-servidos pelo `typed-lm-serve`. O treinador otimiza a **cross-entropy na posição
-de decisão** — o último token do prompt, restrito aos candidatos — que é
-exatamente a posição que o servidor lê no inference, garantindo que o adapter
-ajuste o comportamento que a API efetivamente usa.
+**LoRA/QLoRA** fine-tuning, **full-parameter** training (`full` and
+`from-scratch`) and **post-training quantization** (**PTQ FP8/FP4**) for the
+models served by `typed-lm-serve`. The trainer optimizes the **cross-entropy at
+the decision position** — the last token of the prompt, restricted to the
+candidate labels — which is exactly the position the server reads at inference
+time, ensuring the adapter tunes the behaviour the API actually uses.
 
-## Subcomandos
+## Subcommands
 
 ```bash
 cargo run -p typed-lm-trainer -- train --help
 cargo run -p typed-lm-trainer -- quantize --help
 ```
 
-## Formato do dataset (Jev-native)
+## Dataset format (Jev-native)
 
-Cada registro espelha o contrato de request do Jev (`state` + mapa de
-`questions`) e adiciona um campo `answer` a cada pergunta. A `answer` é
-**semântica**:
+Each record mirrors the Jev request contract (`state` + a `questions` map) and
+adds an `answer` field to every question. The `answer` is **semantic**:
 
-- `noul` → `"yes"` / `"no"` (ou os rótulos declarados em `criteria`);
-- `choice` → o nome da opção;
-- `score` → o nome do nível.
+- `noul` → `"yes"` / `"no"` (or the labels declared in `criteria`);
+- `choice` → the option name;
+- `score` → the level name.
 
-O treinador mapeia a `answer` para o rótulo de planilha (`A`, `B`, …) que o
-servidor pontua.
+The trainer maps the `answer` to the spreadsheet label (`A`, `B`, …) that the
+server scores.
 
-Arquivos aceitos: `.jsonl` (um registro por linha) ou `.json` (objeto único ou
-array). Um diretório é varrido recursivamente.
+Accepted files: `.jsonl` (one record per line) or `.json` (a single object or an
+array). A directory is scanned recursively.
 
 ```jsonl
 {"state": "charged twice", "questions": {"refund": {"type": "noul", "instructions": "Refund?", "answer": "yes"}, "dept": {"type": "choice", "instructions": "Dept?", "criteria": {"billing": "Payments", "technical": "Bugs"}, "answer": "technical"}}}
 {"state": "package arrived broken", "questions": {"urg": {"type": "score", "instructions": "Urgent?", "criteria": ["Routine", "Urgent", "Emergency"], "answer": "Urgent"}}}
 ```
 
-Um exemplo em `resources/dataset.jsonl`.
+An example lives in `resources/dataset.jsonl`.
 
-## Métodos de treino
+## Training methods
 
-`--method` seleciona a parcela treinada e o artefato produzido:
+`--method` selects the trained slice and the produced artifact:
 
-| `--method` | Parâmetros treináveis | Saída em `--output-directory` |
+| `--method` | Trainable parameters | Output in `--output-directory` |
 |---|---|---|
-| `lora` | Adapters LoRA sobre um checkpoint denso congelado | `adapter.safetensors` + `adapter_config.json` |
-| `qlora` | Adapters LoRA sobre um checkpoint-base quantizado (dequantizado no load) | `adapter.safetensors` + `adapter_config.json` |
-| `full` | Todos os parâmetros, partindo de um checkpoint existente | `model.safetensors` + `config.json` + `tokenizer.json` |
-| `from-scratch` | Todos os parâmetros, partindo de pesos inicializados aleatoriamente | `model.safetensors` + `config.json` + `tokenizer.json` |
+| `lora` | LoRA adapters over a frozen dense checkpoint | `adapter.safetensors` + `adapter_config.json` |
+| `qlora` | LoRA adapters over a quantized base checkpoint (dequantized on load) | `adapter.safetensors` + `adapter_config.json` |
+| `full` | Every parameter, starting from an existing checkpoint | `model.safetensors` + `config.json` + `tokenizer.json` |
+| `from-scratch` | Every parameter, starting from randomly initialized weights | `model.safetensors` + `config.json` + `tokenizer.json` |
 
-`full` e `from-scratch` usam `save_full_checkpoint` e gravam um checkpoint
-completo (pesos densos + `config.json` + `tokenizer.json`). Esse artefato é
-**servível diretamente** pelo `typed-lm-serve`, sem etapa de merge de adapter.
-Os métodos `full`/`from-scratch` exigem a geometria do modelo: informe-a via
-checkpoint (`--model-id` com `config.json`) ou pelas flags de geometria abaixo.
+`full` and `from-scratch` use `save_full_checkpoint` and write a complete
+checkpoint (dense weights + `config.json` + `tokenizer.json`). That artifact is
+**serveable directly** by `typed-lm-serve`, with no adapter merge step. The
+`full`/`from-scratch` methods require the model geometry: supply it from a
+checkpoint (`--model-id` with a `config.json`) or through the geometry flags
+below.
 
-## Treinar um adapter
+## Training an adapter
 
 ```bash
 cargo run -p typed-lm-trainer -- train \
-  --model-id /caminho/local/do/checkpoint \
+  --model-id /path/to/local/checkpoint \
   --dataset resources/dataset.jsonl \
   --output-directory output/train \
   --method lora \
@@ -66,73 +66,73 @@ cargo run -p typed-lm-trainer -- train \
   --epochs 3 --batch-size 4 --learning-rate 1e-4
 ```
 
-Flags principais:
+Main flags:
 
-| Flag | Descrição | Default |
+| Flag | Description | Default |
 |---|---|---|
-| `--model-id` | Checkpoint-base local (diretório) | `Qwen/Qwen2.5-1.5B-Instruct` |
-| `--dataset` | Arquivo ou diretório do dataset | (obrigatório) |
-| `--output-directory` | Destino do adapter ou do checkpoint completo | `output/train` |
-| `--method` | `lora`, `qlora`, `full` ou `from-scratch` | `lora` |
-| `--lora-rank` / `--lora-alpha` | Rank e alpha do LoRA (escala `alpha/rank`) | `16` / `32` |
-| `--lora-dropout` | Dropout do adapter | `0` |
-| `--epochs` | Épocas | `3` |
-| `--batch-size` | Batch por passo (itens de mesmo state são agrupados) | `4` |
-| `--gradient-accumulation-steps` | Micro-batches acumulados | `1` |
-| `--learning-rate` | LR de pico (warmup + cosine) | `1e-4` |
-| `--warmup-steps` | Passos de warmup | `10` |
-| `--weight-decay` | Weight decay do AdamW | `0` |
-| `--maximum-gradient-norm` | Clip por norma global | `1` |
-| `--max-sequence-length` | Prompt máximo; itens maiores são ignorados | `1024` |
-| `--minimum-improvement` | Melhora mínima que reseta a paciência | `0` |
-| `--early-stop-patience` | Épocas sem melhora antes de parar (`0` desativa) | `0` |
-| `--quantization` | `none`, `fp8` ou `fp4` | `none` |
-| `--quantization-mode` | `post-training` ou `training` | `post-training` |
-| `--device` | `auto` (CUDA > Metal > CPU), `cpu` ou `cuda` | `auto` |
-| `--seed` | Semente de inicialização determinística (`from-scratch`) | `42` |
-| `--tokenizer-file` | `tokenizer.json` usado por `from-scratch` (sem checkpoint não há tokenizer) | (nenhum) |
-| `--configuration-file` | TOML opcional; flags explícitas da CLI têm precedência | (nenhum) |
+| `--model-id` | Local base checkpoint (directory) | `Qwen/Qwen2.5-1.5B-Instruct` |
+| `--dataset` | Dataset file or directory (or TOML `[dataset] path`) | (required) |
+| `--output-directory` | Destination for the adapter or the complete checkpoint | `output/train` |
+| `--method` | `lora`, `qlora`, `full` or `from-scratch` | `lora` |
+| `--lora-rank` / `--lora-alpha` | LoRA rank and alpha (scale `alpha/rank`) | `16` / `32` |
+| `--lora-dropout` | Adapter dropout | `0` |
+| `--epochs` | Epochs | `3` |
+| `--batch-size` | Batch per step (items sharing a state are bucketed) | `4` |
+| `--gradient-accumulation-steps` | Accumulated micro-batches | `1` |
+| `--learning-rate` | Peak LR (warmup + cosine) | `1e-4` |
+| `--warmup-steps` | Warmup steps | `10` |
+| `--weight-decay` | AdamW weight decay | `0` |
+| `--maximum-gradient-norm` | Global gradient-norm clipping | `1` |
+| `--max-sequence-length` | Maximum prompt length; longer items are skipped | `1024` |
+| `--minimum-improvement` | Minimum improvement that resets patience | `0` |
+| `--early-stop-patience` | Epochs without improvement before stopping (`0` disables) | `0` |
+| `--quantization` | `none`, `fp8` or `fp4` | `none` |
+| `--quantization-mode` | `post-training` or `training` | `post-training` |
+| `--device` | `auto` (CUDA > Metal > CPU), `cpu` or `cuda` | `auto` |
+| `--seed` | Deterministic initialization seed (`from-scratch`) | `42` |
+| `--tokenizer-file` | `tokenizer.json` used by `from-scratch` (no checkpoint, no tokenizer) | (none) |
+| `--configuration-file` | Optional TOML; explicit CLI flags take precedence | (none) |
 
-Para `lora`/`qlora` a saída no `--output-directory` é `adapter.safetensors` +
-`adapter_config.json`; para `full`/`from-scratch` é um checkpoint completo
+For `lora`/`qlora` the output in `--output-directory` is `adapter.safetensors` +
+`adapter_config.json`; for `full`/`from-scratch` it is a complete checkpoint
 (`model.safetensors` + `config.json` + `tokenizer.json`).
 
-### Geometria do modelo (`full` / `from-scratch`)
+### Model geometry (`full` / `from-scratch`)
 
-Usadas quando a geometria não vem de um `config.json` de checkpoint. Todas são
-opcionais na CLI (default `none`) e podem vir do arquivo TOML:
+Used when the geometry does not come from a checkpoint `config.json`. All are
+optional on the CLI (default `none`) and can come from the TOML file:
 
-| Flag | Descrição |
+| Flag | Description |
 |---|---|
-| `--architecture` | Família (`llama`, `qwen2`, `qwen3`, `mistral`, `gemma`, `gemma2`, `gemma3`) |
-| `--hidden-size` | Dimensão oculta |
-| `--intermediate-size` | Dimensão intermediária do feed-forward |
-| `--num-hidden-layers` | Número de blocos transformer |
-| `--num-attention-heads` | Número de cabeças de query |
-| `--head-dim` | Dimensão da cabeça (default: `hidden_size / num_attention_heads`) |
-| `--num-key-value-heads` | Número de cabeças key/value (GQA) |
-| `--vocab-size` | Tamanho do vocabulário |
-| `--max-position-embeddings` | Comprimento máximo de sequência |
-| `--rope-theta` | Frequência-base do rotary embedding |
-| `--rms-norm-eps` | Épsilon da normalização RMS |
-| `--tie-word-embeddings` | Embeddings de entrada e saída compartilham peso |
-| `--attention-bias` | Projeções de atenção com bias |
-| `--sliding-window` | Tamanho da janela deslizante |
-| `--sliding-window-pattern` | Alternância global/local do Gemma3 |
-| `--rope-local-base-frequency` | Frequência-base do RoPE local do Gemma3 |
-| `--query-pre-attention-scalar` | Denominador da escala de atenção do Gemma2/Gemma3 |
-| `--logit-softcapping` | `final_logit_softcapping` do Gemma2/Gemma3 |
-| `--attention-logit-softcapping` | `attn_logit_softcapping` do Gemma2/Gemma3 |
+| `--architecture` | Family (`llama`, `qwen2`, `qwen3`, `mistral`, `gemma`, `gemma2`, `gemma3`) |
+| `--hidden-size` | Hidden dimension |
+| `--intermediate-size` | Feed-forward intermediate dimension |
+| `--num-hidden-layers` | Number of transformer blocks |
+| `--num-attention-heads` | Number of query heads |
+| `--head-dim` | Head dimension (default: `hidden_size / num_attention_heads`) |
+| `--num-key-value-heads` | Number of key/value heads (GQA) |
+| `--vocab-size` | Vocabulary size |
+| `--max-position-embeddings` | Maximum sequence length |
+| `--rope-theta` | Rotary embedding base frequency |
+| `--rms-norm-eps` | RMS normalization epsilon |
+| `--tie-word-embeddings` | Input and output embeddings share weights |
+| `--attention-bias` | Attention projections carry a bias |
+| `--sliding-window` | Sliding-window size |
+| `--sliding-window-pattern` | Gemma3 global/local alternation |
+| `--rope-local-base-frequency` | Gemma3 local RoPE base frequency |
+| `--query-pre-attention-scalar` | Gemma2/Gemma3 attention scaling denominator |
+| `--logit-softcapping` | Gemma2/Gemma3 `final_logit_softcapping` |
+| `--attention-logit-softcapping` | Gemma2/Gemma3 `attn_logit_softcapping` |
 
-Campos não informados recebem o default da família (geometria de `head_dim`,
-soft-caps, RoPE local e janela do Gemma3, viés de atenção), de modo que o
-`config.json` emitido é sempre servível pelo `typed-lm-serve`.
+Fields left unset take the family default (`head_dim` derivation, soft-caps,
+Gemma3 local RoPE and window, attention bias), so the emitted `config.json` is
+always serveable by `typed-lm-serve`.
 
-A referência completa do TOML (seções `[run]`, `[model]`, `[initialization]`,
-`[dataset]`, `[tokenizer]`) está em
+The complete TOML reference (`[run]`, `[model]`, `[initialization]`,
+`[dataset]`, `[tokenizer]`) is in
 [`docs/configuration-file.md`](../docs/configuration-file.md).
 
-## Treinar do zero (`from-scratch`)
+## Training from scratch (`from-scratch`)
 
 ```bash
 cargo run -p typed-lm-trainer -- train \
@@ -143,53 +143,56 @@ cargo run -p typed-lm-trainer -- train \
   --hidden-size 512 --intermediate-size 2048 \
   --num-hidden-layers 8 --num-attention-heads 8 --num-key-value-heads 2 \
   --vocab-size 151936 --max-position-embeddings 1024 \
-  --tokenizer-file /caminho/para/tokenizer.json \
+  --tokenizer-file /path/to/tokenizer.json \
   --seed 42 --device auto
 ```
 
-Sem `--model-id`, o formato do prompt (rótulo de planilha) é fixado pela
-`--architecture`; sem checkpoint, o tokenizer precisa ser informado em
-`--tokenizer-file` (ou em `[tokenizer] file` no TOML).
+Without `--model-id`, the prompt format (spreadsheet label) is fixed by
+`--architecture`; with no checkpoint, the tokenizer must be supplied via
+`--tokenizer-file` (or `[tokenizer] file` in the TOML).
 
-## Quantizar (PTQ)
+## Quantize (PTQ)
 
 ```bash
 cargo run -p typed-lm-trainer -- quantize \
-  --model-id /caminho/local/do/checkpoint \
+  --model-id /path/to/local/checkpoint \
   --adapter-directory output/train \
   --quantization fp8 \
   --output-directory output/quantized
 ```
 
-- `--adapter-directory` é opcional: quando informado, o adapter é mergeado ao
-  peso-base antes da quantização.
-- Saída: `model.safetensors` + `quantization_config.json`.
-- `fp8` usa tensores `F8_E4M3` com escala por canal (`*_scale`).
-- `fp4` (MXFP4) grava nibbles E2M1 empacotados em `U8` + expoentes `F8E8M0`
-  (`*_scale`), pois o safetensors/Candle não converte `F4`. O loader dequantiza
-  ambos os formatos para denso F32 no load.
+- `--adapter-directory` is optional: when supplied, the adapter is merged into
+  the base weights before quantization; when omitted, the base checkpoint is
+  quantized as-is.
+- `--model-id` accepts any dense checkpoint directory, including one written by
+  `full`/`from-scratch`, so a from-scratch artifact can be quantized directly.
+- Output: `model.safetensors` + `quantization_config.json`.
+- `fp8` uses `F8_E4M3` tensors with per-channel scaling (`*_scale`).
+- `fp4` (MXFP4) writes E2M1 nibbles packed into `U8` plus `F8E8M0` exponents
+  (`*_scale`), because safetensors/Candle cannot convert `F4`. The loader
+  dequantizes both formats to dense F32 on load.
 
-## Paridade CPU/CUDA
+## CPU/CUDA parity
 
 `PrecisionPolicy { master: F32, compute: F32(CPU)/BF16(GPU), reduction: F32 }`:
-peso-mestre e otimizador em F32 em ambos os dispositivos, BF16 só como compute em
-GPU, reduções sempre em F32. A qualidade do adapter independe do device;
-paridade é funcional, não de velocidade.
+master weights and optimizer stay in F32 on both devices, BF16 is only a
+compute dtype on GPU, and reductions are always F32. Adapter quality is
+device-independent; parity is functional, not of speed.
 
-## Testes
+## Tests
 
 ```bash
 cargo test -p typed-lm-trainer
-cargo test -p typed-lm-trainer -- --ignored   # casos com pesos reais
+cargo test -p typed-lm-trainer -- --ignored   # real-weight cases
 ```
 
-Os testes E2E (overfit dummy, export FP8/FP4) rodam em CPU com um checkpoint
-minúsculo em `tests/support/`, sem download. O teste live de GPU
-(`tests/live_gpu_e2e.rs`) baixa um checkpoint real, treina LoRA em CUDA e exporta
-FP8:
+The E2E tests (dummy overfit, FP8/FP4 export) run on CPU with a tiny checkpoint
+in `tests/support/`, with no download. The live GPU test
+(`tests/live_gpu_e2e.rs`) downloads a real checkpoint, trains LoRA on CUDA and
+exports FP8:
 
 ```bash
 cargo test -p typed-lm-trainer --features cuda --test live_gpu_e2e -- --ignored --nocapture
 ```
 
-Documentação detalhada (em inglês) em [`docs/training.md`](../docs/training.md).
+Detailed documentation is in [`docs/training.md`](../docs/training.md).
