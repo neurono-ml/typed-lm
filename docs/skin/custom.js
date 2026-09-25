@@ -70,15 +70,24 @@
   }
 
   function inject(description) {
-    var path = window.location.pathname.replace(/index\.html$/, '');
-    var canonical = SITE + path;
+    // mdBook 0.5 does not emit a canonical link, so build one from the site
+    // root. The document lives under the site subpath (for example
+    // /typed-lm/), captured here so the subpath is never doubled.
     var link = document.head.querySelector('link[rel="canonical"]');
-    if (!link) {
+    var canonical;
+    if (link && link.getAttribute('href')) {
+      canonical = link.getAttribute('href');
+    } else {
+      var siteRoot = SITE + '/';
+      var withinSite = window.location.pathname.startsWith('/typed-lm/')
+        ? window.location.pathname.slice('/typed-lm/'.length)
+        : window.location.pathname.replace(/^\//, '');
+      canonical = siteRoot + withinSite;
       link = document.createElement('link');
       link.setAttribute('rel', 'canonical');
+      link.setAttribute('href', canonical);
       document.head.appendChild(link);
     }
-    link.setAttribute('href', canonical);
     setMeta('property', 'og:site_name', 'typed-lm');
     setMeta('property', 'og:type', 'article');
     setMeta('property', 'og:title', document.title);
