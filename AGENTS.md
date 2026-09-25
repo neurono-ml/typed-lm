@@ -65,6 +65,12 @@ The API is complemented by `GET /v1/models`, `GET /health` and `GET /health/live
     *   Never open a pull request that merges `docs/gh-pages` into `main` (or the reverse). If a shared file such as a crate `README.md` must change, apply the same edit independently on each branch.
     *   The one exception is `.github/workflows/deploy-documentation.yml`: it must exist on **both** branches, because GitHub only registers a `push` workflow trigger from the default branch.
 10. **Model Name is `typed-lm`, Never `jev-latest`:** The served model name defaults to **`typed-lm`**. Do **not** use `jev-latest` (or any `jev-` alias) as a model name in code, tests, fixtures, examples or documentation. The term **Jev** refers exclusively to the **TypeSafe AI product** and may appear only when referring to it (for example, the Jev-compatible HTTP contract and the "typed-lm and Jev" comparison). `is_supported_model` accepts only the exact served model name.
+11. **Releases and Container Builds Happen in GitHub Actions, Never Locally:** Every artifact that is published is built by a workflow on GitHub — never by hand on a workstation or in the devcontainer:
+    *   **Crates:** `cargo publish` runs only from the `publish-crates` job in `.github/workflows/release.yml`, triggered by a version tag. Do **not** run `cargo publish` locally.
+    *   **Container images:** the CPU and CUDA images are built and pushed only by the `docker` and `docker-cuda` jobs, using `docker/build-push-action`. Do **not** `docker push` an image built locally.
+    *   **Release binaries:** the tar.gz archives are produced only by the `build-cpu`, `build-cuda` and `build-metal` jobs.
+    *   Local `docker build` and `cargo build` are for **verification only** (checking that a change compiles, that an image starts, that a Dockerfile's layers resolve). They must never be the source of a published artifact.
+    *   To ship a change, bump the version in `Cargo.toml` and push a tag; the `Release` workflow does the rest. Any manual publication is a process violation.
 
 ## 5. Testing Guidelines (Mandatory)
 No code, route or function may be produced without its automated test. The agent must adopt the TDD (Test-Driven Development) methodology in its responses.
