@@ -1,9 +1,23 @@
 # Quick start
 
 This guide takes you from zero to a typed answer, then trains and serves a LoRA
-adapter. It assumes a Rust toolchain; no GPU is required for the first steps.
+adapter. The fastest path uses the published **container images** — no toolchain
+to install; the **cargo** path follows for those who prefer a native binary. No
+GPU is required for the first steps.
 
 ## 1. Install
+
+### With Docker (recommended)
+
+The images are published to the GitHub Container Registry on every release,
+tagged `latest` and with the version:
+
+```bash
+docker pull ghcr.io/neurono-ml/typed-lm-serve:latest
+docker pull ghcr.io/neurono-ml/typed-lm-trainer:latest
+```
+
+### With cargo
 
 ```bash
 # Server and trainer from crates.io (CPU build).
@@ -19,12 +33,37 @@ See [Running the server](./guides/running.md) for the full matrix.
 
 ## 2. Start the server
 
+### With Docker
+
+The server downloads the default model on first startup and listens on `8080`.
+Mount a context file to anchor the answers on your own facts:
+
+```bash
+docker run --rm -p 8080:8080 \
+  -v "$PWD/resources/memory.md:/etc/typed-lm/memory.md:ro" \
+  -e CONTEXT_PATH=/etc/typed-lm/memory.md \
+  ghcr.io/neurono-ml/typed-lm-serve:latest
+```
+
+To persist the downloaded weights across runs, add a volume for the Hugging
+Face cache and set `HF_HOME`:
+
+```bash
+docker run --rm -p 8080:8080 \
+  -v typed-lm-cache:/root/.cache/huggingface \
+  -v "$PWD/resources/memory.md:/etc/typed-lm/memory.md:ro" \
+  -e CONTEXT_PATH=/etc/typed-lm/memory.md \
+  ghcr.io/neurono-ml/typed-lm-serve:latest
+```
+
+### With cargo
+
 ```bash
 # Downloads the default model (Qwen/Qwen2.5-1.5B-Instruct) on first startup.
 typed-lm-serve --context-path resources/memory.md
 ```
 
-Verify it is up:
+Verify it is up (works for both paths):
 
 ```bash
 curl -s http://127.0.0.1:8080/health/live
@@ -65,6 +104,31 @@ The complete contract is in [Calling the API](./guides/api.md).
 
 ## 4. Train a LoRA adapter
 
+### With Docker
+
+Mount the working directory so the checkpoint, the dataset and the output all
+live on the host. The container runs with `/work` as the working directory:
+
+```bash
+docker run --rm -v "$PWD:/work" -w /work \
+  ghcr.io/neurono-ml/typed-lm-trainer:latest train \
+  --model-id /work/checkpoint \
+  --dataset /work/resources/dataset.jsonl \
+  --output-directory /work/output/train \
+  --method lora --epochs 3 --batch-size 4 --learning-rate 1e-4
+```
+
+For GPU training, build a CUDA image and add `--gpus all`:
+
+```bash
+docker build -f docker/Dockerfile.trainer --build-arg FEATURES=cuda -t typed-lm-trainer:cuda .
+docker run --rm --gpus all -v "$PWD:/work" -w /work typed-lm-trainer:cuda train \
+  --model-id /work/checkpoint --dataset /work/resources/dataset.jsonl \
+  --output-directory /work/output/train --method lora --device cuda
+```
+
+### With cargo
+
 ```bash
 typed-lm-trainer train \
   --model-id /path/to/local/checkpoint \
@@ -78,6 +142,28 @@ The dataset format and every flag are documented in
 [Training LoRA and QLoRA adapters](./training/lora-qlora.md).
 
 ## 5. Quantize and serve
+
+### With Docker
+
+```bash
+docker run --rm -v "$PWD:/work" -w /work \
+  ghcr.io/neurono-ml/typed-lm-trainer:latest quantize \
+  --model-id /work/checkpoint \
+  --adapter-directory /work/output/train \
+  --quantization fp8 --output-directory /work/output/quantized
+
+# The quantized directory holds weights only; add the base metadata.
+cp /path/to/local/checkpoint/config.json    output/quantized/
+cp /path/to/local/checkpoint/tokenizer.json output/quantized/
+
+# Serve the artifact.
+docker run --rm -p 8080:8080 \
+  -v "$PWD/output/quantized:/models/quantized:ro" \
+  ghcr.io/neurono-ml/typed-lm-serve:latest \
+  --model-id /models/quantized
+```
+
+### With cargo
 
 ```bash
 typed-lm-trainer quantize \
